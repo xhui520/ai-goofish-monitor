@@ -55,15 +55,25 @@ export function useDashboard() {
   const isLoading = ref(false)
   const error = ref<Error | null>(null)
 
+  // Per-fetch request sequence counters: discard stale responses that resolve
+  // after a newer request for the same reactive state has been issued.
+  let fetchSummarySeq = 0
+  let fetchFocusInsightsSeq = 0
+
   async function fetchSummary() {
+    const seq = ++fetchSummarySeq
     isLoading.value = true
     error.value = null
     try {
-      snapshot.value = await dashboardApi.getDashboardSummary()
+      const data = await dashboardApi.getDashboardSummary()
+      if (seq !== fetchSummarySeq) return
+      snapshot.value = data
     } catch (e) {
+      if (seq !== fetchSummarySeq) return
       if (e instanceof Error) error.value = e
     } finally {
-      isLoading.value = false
+      // Only the newest request may reset the shared loading flag.
+      if (seq === fetchSummarySeq) isLoading.value = false
     }
   }
 
@@ -92,12 +102,18 @@ export function useDashboard() {
 
   async function fetchFocusInsights(filename: string | null | undefined) {
     if (!filename) {
+      // Invalidate any in-flight insights request so it cannot overwrite the cleared state.
+      fetchFocusInsightsSeq++
       focusInsights.value = null
       return
     }
+    const seq = ++fetchFocusInsightsSeq
     try {
-      focusInsights.value = await resultsApi.getResultInsights(filename)
+      const data = await resultsApi.getResultInsights(filename)
+      if (seq !== fetchFocusInsightsSeq) return
+      focusInsights.value = data
     } catch {
+      if (seq !== fetchFocusInsightsSeq) return
       focusInsights.value = null
     }
   }

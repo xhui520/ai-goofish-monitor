@@ -26,7 +26,15 @@ export function useResults() {
   const isSavingBlacklist = ref(false)
   const readyDelayMs = 200
   let readyTimer: ReturnType<typeof setTimeout> | null = null
-  
+
+  // Per-fetch request sequence counters: discard stale responses that resolve
+  // after a newer request for the same reactive state has been issued.
+  let fetchFilesSeq = 0
+  let fetchResultsSeq = 0
+  let fetchInsightsSeq = 0
+  let fetchBlacklistSeq = 0
+  let fetchTaskNameSeq = 0
+
   const STORAGE_KEY_FILTERS = 'resultFilters'
 
   function loadPersistedFilters(): Required<Omit<GetResultContentParams, 'page' | 'limit'>> {
@@ -61,8 +69,10 @@ export function useResults() {
 
   // Methods
   async function fetchFiles() {
+    const seq = ++fetchFilesSeq
     try {
       const fileList = await resultsApi.getResultFiles()
+      if (seq !== fetchFilesSeq) return
       files.value = fileList
       // If a file is selected that no longer exists, reset it.
       // Otherwise, if nothing is selected, select the first file by default.
@@ -87,6 +97,9 @@ export function useResults() {
 
   async function fetchResults() {
     if (!selectedFile.value) {
+      // Invalidate any in-flight request so it cannot overwrite the cleared state.
+      fetchResultsSeq++
+      isLoading.value = false
       results.value = []
       totalItems.value = 0
       return
@@ -94,32 +107,42 @@ export function useResults() {
 
     isLoading.value = true
     error.value = null
+    const seq = ++fetchResultsSeq
     try {
       const data = await resultsApi.getResultContent(selectedFile.value, {
         ...filters,
         page: page.value,
         limit: limit.value,
       })
+      if (seq !== fetchResultsSeq) return
       results.value = data.items
       totalItems.value = data.total_items
     } catch (e) {
+      if (seq !== fetchResultsSeq) return
       if (e instanceof Error) error.value = e
       results.value = []
       totalItems.value = 0
     } finally {
-      isLoading.value = false
+      // Only the newest request may reset the shared loading flag.
+      if (seq === fetchResultsSeq) isLoading.value = false
     }
   }
 
   async function fetchInsights() {
     if (!selectedFile.value) {
+      // Invalidate any in-flight request so it cannot overwrite the cleared state.
+      fetchInsightsSeq++
       insights.value = null
       return
     }
 
+    const seq = ++fetchInsightsSeq
     try {
-      insights.value = await resultsApi.getResultInsights(selectedFile.value)
+      const data = await resultsApi.getResultInsights(selectedFile.value)
+      if (seq !== fetchInsightsSeq) return
+      insights.value = data
     } catch (e) {
+      if (seq !== fetchInsightsSeq) return
       if (e instanceof Error) error.value = e
       insights.value = null
     }
@@ -127,22 +150,29 @@ export function useResults() {
 
   async function fetchBlacklistRules() {
     if (!selectedFile.value) {
+      // Invalidate any in-flight request so it cannot overwrite the cleared state.
+      fetchBlacklistSeq++
       blacklistKeywords.value = []
       return
     }
 
+    const seq = ++fetchBlacklistSeq
     try {
       const data = await resultsApi.getResultBlacklistRules(selectedFile.value)
+      if (seq !== fetchBlacklistSeq) return
       blacklistKeywords.value = data.keywords || []
     } catch (e) {
+      if (seq !== fetchBlacklistSeq) return
       if (e instanceof Error) error.value = e
       blacklistKeywords.value = []
     }
   }
 
   async function fetchTaskNameMap() {
+    const seq = ++fetchTaskNameSeq
     try {
       const tasks = await tasksApi.getAllTasks()
+      if (seq !== fetchTaskNameSeq) return
       const mapping: Record<string, string> = {}
       tasks.forEach((task) => {
         if (task.keyword) {

@@ -28,6 +28,17 @@ const seller = props.item.卖家信息
 const ai = props.item.ai_analysis
 const priceInsight = props.item.price_insight
 
+// 商品链接来自爬取数据，不属可信输入。仅放行 http(s) 协议，
+// 防止 javascript:/data: 等危险 URI 通过 :href 在点击时被执行。
+function safeExternalUrl(url: unknown): string | undefined {
+  if (typeof url !== 'string') return undefined
+  const trimmed = url.trim()
+  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  return undefined
+}
+
+const safeItemUrl = safeExternalUrl(info.商品链接)
+
 const isRecommended = ai?.is_recommended === true
 const recommendationStatus = computed(() => {
   if (ai?.is_recommended === true) return { label: t('results.card.strongRecommend'), color: 'bg-emerald-500', icon: CheckCircle2, text: 'text-emerald-600', bg: 'bg-emerald-50' }
@@ -89,7 +100,8 @@ const expanded = ref(false)
           <Eye v-else class="w-4 h-4" />
         </button>
          <a
-           :href="info.商品链接"
+           v-if="safeItemUrl"
+           :href="safeItemUrl"
            target="_blank"
            rel="noopener noreferrer"
            :aria-label="t('results.card.detail')"
@@ -103,9 +115,10 @@ const expanded = ref(false)
     <CardHeader class="p-4 pb-2">
       <div class="flex justify-between items-start gap-3">
         <CardTitle class="text-base font-semibold text-slate-800 line-clamp-2 leading-snug flex-grow h-10">
-          <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="hover:text-primary transition-colors">
+          <a v-if="safeItemUrl" :href="safeItemUrl" target="_blank" rel="noopener noreferrer" class="hover:text-primary transition-colors">
             {{ info.商品标题 }}
           </a>
+          <span v-else>{{ info.商品标题 }}</span>
         </CardTitle>
       </div>
       <div class="flex items-baseline gap-1 mt-2">
@@ -183,9 +196,12 @@ const expanded = ref(false)
           <span>{{ crawlTime }}</span>
         </div>
       </div>
-      <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-primary font-bold hover:gap-1.5 transition-all">
+      <a v-if="safeItemUrl" :href="safeItemUrl" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-primary font-bold hover:gap-1.5 transition-all">
         {{ t('results.card.detail') }} <ExternalLink class="w-3 h-3" />
       </a>
+      <span v-else class="flex items-center gap-1 text-slate-300">
+        {{ t('results.card.detail') }} <ExternalLink class="w-3 h-3" />
+      </span>
     </CardFooter>
   </Card>
 </template>
