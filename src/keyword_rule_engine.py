@@ -34,14 +34,21 @@ def _collect_text_fragments(value: Any, bucket: List[str]) -> None:
             _collect_text_fragments(item, bucket)
 
 
+# 仅将“人写的内容”字段纳入关键词匹配范围；商品链接/商品ID/图片 URL 等
+# 结构化字段不参与匹配，避免数字关键词（如 “123”）误命中链接里的 id。
+_PRODUCT_MATCH_KEYS = ("商品标题", "商品描述", "商品标签")
+_SELLER_MATCH_KEYS = ("卖家昵称", "卖家个性签名", "卖家标签")
+
+
 def build_search_text(record: Dict[str, Any]) -> str:
     fragments: List[str] = []
-    product_info = record.get("商品信息", {})
-    seller_info = record.get("卖家信息", {})
+    product_info = record.get("商品信息", {}) or {}
+    seller_info = record.get("卖家信息", {}) or {}
 
-    _collect_text_fragments(product_info.get("商品标题"), fragments)
-    _collect_text_fragments(product_info, fragments)
-    _collect_text_fragments(seller_info, fragments)
+    for key in _PRODUCT_MATCH_KEYS:
+        _collect_text_fragments(product_info.get(key), fragments)
+    for key in _SELLER_MATCH_KEYS:
+        _collect_text_fragments(seller_info.get(key), fragments)
 
     return normalize_text(" ".join(fragments))
 

@@ -2,11 +2,19 @@
 企业微信机器人通知客户端
 """
 import asyncio
+import re
 from typing import Dict
 
 import requests
 
 from .base import NotificationClient
+
+# 企业微信 markdown 的特殊字符；用于转义半可信的商品文本，防止注入链接/格式。
+_MARKDOWN_SPECIALS_RE = re.compile(r"([\\`*_\[\]()~>#+\-=|{}.!])")
+
+
+def _escape_markdown(text: str) -> str:
+    return _MARKDOWN_SPECIALS_RE.sub(r"\\\1", str(text))
 
 
 class WeComBotClient(NotificationClient):
@@ -24,12 +32,18 @@ class WeComBotClient(NotificationClient):
             raise RuntimeError("企业微信 未启用")
 
         message = self._build_message(product_data, reason)
-        markdown_lines = [f"## {message.notification_title}", ""]
-        markdown_lines.append(f"- 价格: {message.price}")
-        markdown_lines.append(f"- 原因: {message.reason}")
+        # 标题/原因/价格等来自半可信的商品数据，markdown 下需转义特殊字符，
+        # 防止被注入 []() 链接结构；固定模板脚手架不转义。
+        markdown_lines = [f"## {_escape_markdown(message.notification_title)}", ""]
+        markdown_lines.append(f"- 价格: {_escape_markdown(message.price)}")
+        markdown_lines.append(f"- 原因: {_escape_markdown(message.reason)}")
         if message.mobile_link:
-            markdown_lines.append(f"- 手机端链接: [{message.mobile_link}]({message.mobile_link})")
-        markdown_lines.append(f"- 电脑端链接: [{message.desktop_link}]({message.desktop_link})")
+            markdown_lines.append(
+                f"- 手机端链接: [{_escape_markdown(message.mobile_link)}]({message.mobile_link})"
+            )
+        markdown_lines.append(
+            f"- 电脑端链接: [{_escape_markdown(message.desktop_link)}]({message.desktop_link})"
+        )
         payload = {
             "msgtype": "markdown",
             "markdown": {"content": "\n".join(markdown_lines)},

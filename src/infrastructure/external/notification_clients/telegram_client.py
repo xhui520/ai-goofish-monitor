@@ -2,6 +2,7 @@
 Telegram 通知客户端
 """
 import asyncio
+import html
 from typing import Dict
 
 import requests
@@ -37,13 +38,19 @@ class TelegramClient(NotificationClient):
             raise RuntimeError("Telegram 未启用")
 
         message = self._build_message(product_data, reason)
+        # 标题/原因等来自半可信的商品数据，parse_mode=HTML 下必须转义，
+        # 否则会被注入 <a href=...> 等标签造成钓鱼链接。
+        safe_title = html.escape(message.title[:50], quote=False)
+        safe_title_suffix = "..." if len(message.title) > 50 else ""
+        safe_price = html.escape(message.price, quote=False)
+        safe_reason = html.escape(message.reason, quote=False)
         telegram_message = [
             "🚨 <b>新推荐!</b>",
             "",
-            f"<b>{message.title[:50]}{'...' if len(message.title) > 50 else ''}</b>",
+            f"<b>{safe_title}{safe_title_suffix}</b>",
             "",
-            f"💰 价格: {message.price}",
-            f"📝 原因: {message.reason}",
+            f"💰 价格: {safe_price}",
+            f"📝 原因: {safe_reason}",
         ]
         if message.mobile_link:
             telegram_message.append(f"📱 <a href='{message.mobile_link}'>手机端链接</a>")

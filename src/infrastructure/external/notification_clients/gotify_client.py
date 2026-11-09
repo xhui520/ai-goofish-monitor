@@ -38,10 +38,12 @@ class GotifyClient(NotificationClient):
             "message": (None, message.content),
             "priority": (None, "5"),
         }
-        final_url = f"{self.gotify_url}/message?token={self.gotify_token}"
+        # token 走请求头而不是 URL query，避免出现在代理日志/访问日志中泄露。
+        headers = {"X-Gotify-Key": self.gotify_token or ""}
+        final_url = f"{self.gotify_url}/message"
         loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(
             None,
-            lambda: requests.post(final_url, files=payload, timeout=10),
+            lambda: requests.post(final_url, files=payload, headers=headers, timeout=10),
         )
         response.raise_for_status()

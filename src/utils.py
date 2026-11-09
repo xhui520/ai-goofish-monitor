@@ -58,6 +58,23 @@ async def safe_get(data, *keys, default="暂无"):
     return data
 
 
+_THINK_BLOCK_RE = re.compile(
+    r"<(?:think|thinking)>.*?</(?:think|thinking)>",
+    re.IGNORECASE | re.DOTALL,
+)
+_UNCLOSED_THINK_RE = re.compile(r"<(?:think|thinking)>", re.IGNORECASE)
+
+
+def strip_think_blocks(text: str) -> str:
+    """剥除思考模型输出中的 <think>/<thinking> 推理块，返回剩余正文。"""
+    return _THINK_BLOCK_RE.sub("", text or "").strip()
+
+
+def has_unclosed_think_block(text: str) -> bool:
+    """判断文本中是否残留未闭合的思考块（说明正文被截断）。"""
+    return bool(_UNCLOSED_THINK_RE.search(text or ""))
+
+
 async def random_sleep(min_seconds: float, max_seconds: float):
     """异步等待一个在指定范围内的随机时间。"""
     delay = random.uniform(min_seconds, max_seconds)

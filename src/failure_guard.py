@@ -15,7 +15,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 
@@ -67,6 +67,23 @@ def _str_to_dt(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _to_aligned(dt: Optional[datetime], tz) -> Optional[datetime]:
+    """把 aware/naive 时间统一到同一时钟后再比较，避免混用抛 TypeError。
+
+    - 有时区库：naive 视为 tz 本地时间；aware 统一换算到 tz。
+    - 无时区库：naive 原样保留（视为同一本地时钟）；aware 先换算成 UTC 再去掉时区。
+    """
+    if dt is None:
+        return None
+    if tz is not None:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=tz)
+        return dt.astimezone(tz)
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _get_mtime(path: Optional[str]) -> Optional[float]:
     if not path:
         return None
@@ -88,23 +105,46 @@ def _cookie_changed(
 
 
 class _FileLock:
+    """跨平台的排他文件锁：POSIX 用 fcntl.flock，Windows 用 msvcrt.locking。
+
+    msvcrt.locking(LK_LOCK) 在被占用时会重试约 10 秒后抛 OSError，
+    因此 Windows 上真正拿不到锁时以异常暴露，避免静默并发写坏状态文件。
+    """
+
     def __init__(self, fh):
         self._fh = fh
+        self._locked = False
 
     def __enter__(self):
-        try:
-            import fcntl
+        if os.name == "nt":
+            import msvcrt
 
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
-        except Exception:
-            pass
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
+            self._locked = True
+        else:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+                self._locked = True
+            except Exception:
+                # POSIX 上 flock 失败（如特殊文件系统）时保持旧行为继续执行。
+                pass
         return self
 
     def __exit__(self, exc_type, exc, tb):
         try:
-            import fcntl
+            if self._locked:
+                if os.name == "nt":
+                    import msvcrt
 
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
         except Exception:
             pass
         return False
@@ -188,9 +228,10 @@ class FailureGuard:
 
     def _update_task(self, task_key: str, updater) -> dict:
         _ensure_parent_dir(self.path)
-        with open(self.path, "a+", encoding="utf-8") as fh:
-            with _FileLock(fh):
-                fh.seek(0)
+        # 独立锁文件：Windows 下 os.replace 无法替换仍被其他句柄打开的目标文件，
+        # 因此把锁加在 <path>.lock 上，数据文件本身用“临时文件+原子替换”写回。
+        with open(f"{self.path}.lock", "a+", encoding="utf-8") as lock_fh:
+            with _FileLock(lock_fh):
                 data = self._load()
                 tasks = data.setdefault("tasks", {})
                 entry = tasks.get(task_key) or {}
@@ -237,6 +278,12 @@ class FailureGuard:
         last_reason = (entry.get("last_failure_reason") or "").strip() or "未知错误"
         last_notified_date = entry.get("last_notified_date")
 
+        # 存储的 ISO 字符串可能带时区（Docker 写入）而当前时间为 naive（无 tzdata），
+        # 先统一时钟再比较，避免 aware/naive 混用抛 TypeError。
+        tz = _load_tz(self.tz_name)
+        paused_cmp = _to_aligned(paused_until, tz)
+        current_cmp = _to_aligned(current, tz)
+
         previous_cookie_mtime = entry.get("cookie_mtime")
         if cookie_path and previous_cookie_mtime is not None:
             try:
@@ -246,7 +293,7 @@ class FailureGuard:
 
         if (
             paused_until
-            and paused_until > current
+            and paused_cmp > current_cmp
             and cookie_path
             and _cookie_changed(cookie_path, previous_cookie_mtime)
         ):
@@ -260,7 +307,7 @@ class FailureGuard:
                 consecutive_failures=0,
             )
 
-        if paused_until and current < paused_until:
+        if paused_until and current_cmp < paused_cmp:
             should_notify = last_notified_date != today
 
             if should_notify:
@@ -313,7 +360,11 @@ class FailureGuard:
         def _apply(entry: dict) -> dict:
             entry = dict(entry or {})
             previous_paused_until = _str_to_dt(entry.get("paused_until"))
-            was_paused = bool(previous_paused_until and current < previous_paused_until)
+            tz = _load_tz(self.tz_name)
+            was_paused = bool(
+                previous_paused_until
+                and _to_aligned(current, tz) < _to_aligned(previous_paused_until, tz)
+            )
 
             prev_mtime = entry.get("cookie_mtime")
             try:

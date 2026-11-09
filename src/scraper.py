@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+import sys
 import tempfile
 from datetime import datetime
 from typing import Optional
@@ -529,9 +530,10 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     processed_links = set()
     history_run_id = datetime.now().strftime("%Y%m%d%H%M%S")
     history_seen_item_ids: set[str] = set()
-    historical_snapshots = load_price_snapshots(keyword)
+    # SQLite 同步调用放入线程池执行，避免阻塞事件循环。
+    historical_snapshots = await asyncio.to_thread(load_price_snapshots, keyword)
     result_filename = build_result_filename(keyword)
-    processed_links = load_processed_link_keys(keyword)
+    processed_links = await asyncio.to_thread(load_processed_link_keys, keyword)
     if processed_links:
         print(f"LOG: 发现已存在结果集 {result_filename}，已加载 {len(processed_links)} 个历史商品用于去重。")
     else:
@@ -581,7 +583,13 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
         ):
             return selected_account
         picked = account_pool.pick_random()
-        return picked or selected_account
+        if picked is None:
+            if force_new:
+                # 池子已全部拉黑：回退到刚被 mark_bad 的账号只会重蹈覆辙，
+                # 返回 None 让调用方走“池子耗尽”的终止逻辑。
+                return None
+            return selected_account
+        return picked
 
     def _select_proxy(force_new: bool = False) -> Optional[RotationItem]:
         nonlocal selected_proxy
@@ -594,11 +602,17 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
         ):
             return selected_proxy
         picked = proxy_pool.pick_random()
-        return picked or selected_proxy
+        if picked is None:
+            if force_new:
+                # 同账号池：force_new 且池子耗尽时不回退到刚拉黑的代理。
+                return None
+            return selected_proxy
+        return picked
 
     async def _run_scrape_attempt(state_file: str, proxy_server: Optional[str]) -> int:
         processed_item_count = 0
         stop_scraping = False
+        consecutive_empty_pages = 0
 
         if not os.path.exists(state_file):
             raise FileNotFoundError(f"登录状态文件不存在: {state_file}")
@@ -812,13 +826,18 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                         print(f"LOG: 应用新发布筛选失败: {e}")
 
                 if personal_only:
-                    async with page.expect_response(
-                        is_search_results_response, timeout=20000
-                    ) as response_info:
-                        await page.click("text=个人闲置")
-                        # --- 修改: 将固定等待改为随机等待，并加长 ---
-                        await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
-                    final_response = await response_info.value
+                    try:
+                        async with page.expect_response(
+                            is_search_results_response, timeout=20000
+                        ) as response_info:
+                            await page.click("text=个人闲置")
+                            # --- 修改: 将固定等待改为随机等待，并加长 ---
+                            await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
+                        final_response = await response_info.value
+                    except PlaywrightTimeoutError:
+                        log_time("个人闲置筛选请求超时，继续执行。")
+                    except Exception as e:
+                        print(f"LOG: 应用个人闲置筛选失败: {e}")
 
                 if free_shipping:
                     try:
@@ -936,34 +955,39 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                         print(f"LOG: 应用区域筛选 '{region_filter}' 失败: {e}")
 
                 if min_price or max_price:
-                    price_container = page.locator(
-                        'div[class*="search-price-input-container"]'
-                    ).first
-                    if await price_container.is_visible():
-                        if min_price:
-                            await price_container.get_by_placeholder("¥").first.fill(
-                                min_price
-                            )
-                            # --- 修改: 将固定等待改为随机等待 ---
-                            await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
-                        if max_price:
-                            await (
-                                price_container.get_by_placeholder("¥")
-                                .nth(1)
-                                .fill(max_price)
-                            )
-                            # --- 修改: 将固定等待改为随机等待 ---
-                            await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
+                    try:
+                        price_container = page.locator(
+                            'div[class*="search-price-input-container"]'
+                        ).first
+                        if await price_container.is_visible():
+                            if min_price:
+                                await price_container.get_by_placeholder("¥").first.fill(
+                                    min_price
+                                )
+                                # --- 修改: 将固定等待改为随机等待 ---
+                                await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
+                            if max_price:
+                                await (
+                                    price_container.get_by_placeholder("¥")
+                                    .nth(1)
+                                    .fill(max_price)
+                                )
+                                # --- 修改: 将固定等待改为随机等待 ---
+                                await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
 
-                        async with page.expect_response(
-                            is_search_results_response, timeout=20000
-                        ) as response_info:
-                            await page.keyboard.press("Tab")
-                            # --- 修改: 增加确认价格后的等待时间 ---
-                            await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
-                        final_response = await response_info.value
-                    else:
-                        print("LOG: 警告 - 未找到价格输入容器。")
+                            async with page.expect_response(
+                                is_search_results_response, timeout=20000
+                            ) as response_info:
+                                await page.keyboard.press("Tab")
+                                # --- 修改: 增加确认价格后的等待时间 ---
+                                await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
+                            final_response = await response_info.value
+                        else:
+                            print("LOG: 警告 - 未找到价格输入容器。")
+                    except PlaywrightTimeoutError:
+                        log_time("价格区间筛选请求超时，继续执行。")
+                    except Exception as e:
+                        print(f"LOG: 应用价格区间筛选失败: {e}")
 
                 log_time("所有筛选已完成，开始处理商品列表...")
 
@@ -994,17 +1018,28 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                         await current_response.json(), f"第 {page_num} 页"
                     )
                     if not basic_items:
-                        break
-                    historical_snapshots.extend(
-                        record_market_snapshots(
-                            keyword=keyword,
-                            task_name=task_config.get("task_name", "Untitled Task"),
-                            items=basic_items,
-                            run_id=history_run_id,
-                            snapshot_time=datetime.now().isoformat(),
-                            seen_item_ids=history_seen_item_ids,
+                        # 单条脏数据已由解析层逐条隔离，这里为空通常意味着本页确实没有商品；
+                        # 但偶发的空响应/解析抖动不应截断后续页，连续 2 次空页才结束翻页。
+                        consecutive_empty_pages += 1
+                        log_time(
+                            f"第 {page_num} 页未解析到商品"
+                            f"（连续空页 {consecutive_empty_pages}/2）。"
                         )
+                        if page_num == 1 or consecutive_empty_pages >= 2:
+                            break
+                        continue
+                    consecutive_empty_pages = 0
+                    # SQLite 同步写入放入线程池执行，避免阻塞事件循环。
+                    new_snapshots = await asyncio.to_thread(
+                        record_market_snapshots,
+                        keyword=keyword,
+                        task_name=task_config.get("task_name", "Untitled Task"),
+                        items=basic_items,
+                        run_id=history_run_id,
+                        snapshot_time=datetime.now().isoformat(),
+                        seen_item_ids=history_seen_item_ids,
                     )
+                    historical_snapshots.extend(new_snapshots)
 
                     total_items_on_page = len(basic_items)
                     for i, item_data in enumerate(basic_items, 1):
@@ -1223,8 +1258,15 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     await analysis_dispatcher.join()
                 log_time("任务执行完毕，浏览器将在5秒后自动关闭...")
                 await asyncio.sleep(5)
-                if debug_limit:
-                    input("按回车键关闭浏览器...")
+                if debug_limit and sys.stdin is not None and sys.stdin.isatty():
+                    # 交互式终端才等待人工回车；输入放到线程池，避免阻塞事件循环，
+                    # 并吞掉非 TTY 环境下的 EOFError/OSError（否则会掩盖原始异常）。
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(
+                            None, input, "按回车键关闭浏览器..."
+                        )
+                    except (EOFError, OSError):
+                        pass
                 await browser.close()
 
         return processed_item_count

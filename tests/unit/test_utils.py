@@ -51,4 +51,13 @@ def test_save_to_jsonl(tmp_path, monkeypatch):
             sort_order="asc",
         )
     )
-    assert records == [record]
+    # 读取时会附带黑名单/可见性增强字段（见 result_storage_service 的
+    # _decorate_record_visibility）：无黑名单命中且未过期 => 全部可见。
+    expected = {
+        **record,
+        "_status": "active",
+        "_matched_blacklist_keywords": [],
+        "_hidden_reason": None,
+        "_effective_hidden": False,
+    }
+    assert records == [expected]

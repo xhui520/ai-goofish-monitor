@@ -4,6 +4,45 @@ from datetime import datetime
 from src.config import AI_DEBUG_MODE
 from src.utils import safe_get
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
+
+# 闲鱼接口返回的毫秒时间戳按东八区发布时间展示；容器内默认 UTC 会导致 8 小时偏移。
+_SHANGHAI_TZ = None
+if ZoneInfo is not None:
+    try:
+        _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+    except Exception:  # Windows 缺少 tzdata 等情况下回退为本地时间
+        _SHANGHAI_TZ = None
+
+
+def _format_publish_time(pub_time_ts: str) -> str:
+    """毫秒时间戳 -> 东八区展示时间；无 tzdata 时回退本地时间。"""
+    if not isinstance(pub_time_ts, str) or not pub_time_ts.isdigit():
+        return "未知时间"
+    ts_seconds = int(pub_time_ts) / 1000
+    try:
+        if _SHANGHAI_TZ is not None:
+            dt = datetime.fromtimestamp(ts_seconds, tz=_SHANGHAI_TZ)
+        else:
+            dt = datetime.fromtimestamp(ts_seconds)
+    except (OverflowError, OSError, ValueError):
+        return "未知时间"
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _normalize_price(price: str) -> str:
+    """把“X万”形态的价格换算为元；脏数据（如“1,5万起”）保留原文。"""
+    if "万" not in price:
+        return price
+    try:
+        return f"¥{float(price.replace('¥', '').replace('万', '')) * 10000:.0f}"
+    except (TypeError, ValueError):
+        print(f"LOG: 价格 '{price}' 无法解析为数值，保留原文。")
+        return price
+
 
 async def _parse_search_results_json(json_data: dict, source: str) -> list:
     """解析搜索API的JSON数据，返回基础商品信息列表。"""
@@ -17,8 +56,13 @@ async def _parse_search_results_json(json_data: dict, source: str) -> list:
                 print(json.dumps(json_data, ensure_ascii=False, indent=2))
                 print("----------------------------------------------------")
             return []
+    except Exception as e:
+        print(f"LOG: ({source}) JSON数据处理异常: {str(e)}")
+        return []
 
-        for item in items:
+    # 逐条隔离异常：单条脏数据只跳过自己，不再让整页结果静默丢失。
+    for item in items:
+        try:
             main_data = await safe_get(item, "data", "item", "main", "exContent", default={})
             click_params = await safe_get(item, "data", "item", "main", "clickParam", "args", default={})
 
@@ -26,8 +70,7 @@ async def _parse_search_results_json(json_data: dict, source: str) -> list:
             price_parts = await safe_get(main_data, "price", default=[])
             price = "".join([str(p.get("text", "")) for p in price_parts if isinstance(p, dict)]).replace("当前价", "").strip() if isinstance(price_parts, list) else "价格异常"
             # 确保price是字符串类型，避免float类型导致的"in"操作错误
-            price = str(price) if not isinstance(price, str) else price
-            if "万" in price: price = f"¥{float(price.replace('¥', '').replace('万', '')) * 10000:.0f}"
+            price = _normalize_price(str(price) if not isinstance(price, str) else price)
             area = await safe_get(main_data, "area", default="地区未知")
             seller = await safe_get(main_data, "userNickName", default="匿名卖家")
             raw_link = await safe_get(item, "data", "item", "main", "targetUrl", default="")
@@ -47,6 +90,10 @@ async def _parse_search_results_json(json_data: dict, source: str) -> list:
                 if "验货宝" in content:
                     tags.append("验货宝")
 
+            # targetUrl 可能为 None，先兜底为空字符串再替换协议头。
+            if not isinstance(raw_link, str):
+                raw_link = ""
+
             page_data.append({
                 "商品标题": title,
                 "当前售价": price,
@@ -56,14 +103,14 @@ async def _parse_search_results_json(json_data: dict, source: str) -> list:
                 "发货地区": area,
                 "卖家昵称": seller,
                 "商品链接": raw_link.replace("fleamarket://", "https://www.goofish.com/"),
-                "发布时间": datetime.fromtimestamp(int(pub_time_ts)/1000).strftime("%Y-%m-%d %H:%M") if pub_time_ts.isdigit() else "未知时间",
+                "发布时间": _format_publish_time(pub_time_ts),
                 "商品ID": item_id
             })
-        print(f"LOG: ({source}) 成功解析到 {len(page_data)} 条商品基础信息。")
-        return page_data
-    except Exception as e:
-        print(f"LOG: ({source}) JSON数据处理异常: {str(e)}")
-        return []
+        except Exception as e:
+            print(f"LOG: ({source}) 跳过一条无法解析的商品数据: {type(e).__name__} - {e}")
+            continue
+    print(f"LOG: ({source}) 成功解析到 {len(page_data)} 条商品基础信息。")
+    return page_data
 
 
 async def calculate_reputation_from_ratings(ratings_json: list) -> dict:

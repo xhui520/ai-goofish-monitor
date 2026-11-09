@@ -1,12 +1,12 @@
 import json
 import os
-import re
 import sys
 from typing import Awaitable, Callable, Optional
 
 import aiofiles
 
 from src.infrastructure.external.ai_client import AIClient
+from src.utils import has_unclosed_think_block, strip_think_blocks
 
 # The meta-prompt to instruct the AI
 META_PROMPT_TEMPLATE = """
@@ -37,11 +37,6 @@ META_PROMPT_TEMPLATE = """
 ProgressCallback = Callable[[str, str], Awaitable[None]]
 # 参考标准大约一千多 token。思考模型还会先输出推理，800 会把正文截掉。
 CRITERIA_MAX_OUTPUT_TOKENS = 8192
-_THINK_BLOCK_RE = re.compile(
-    r"<(?:think|thinking)>.*?</(?:think|thinking)>",
-    re.IGNORECASE | re.DOTALL,
-)
-_UNCLOSED_THINK_RE = re.compile(r"<(?:think|thinking)>", re.IGNORECASE)
 
 
 async def _report_progress(
@@ -64,8 +59,8 @@ def _read_reference_text(reference_file_path: str) -> str:
 
 
 def _strip_reasoning_blocks(text: str) -> str:
-    stripped = _THINK_BLOCK_RE.sub("", text).strip()
-    if _UNCLOSED_THINK_RE.search(stripped):
+    stripped = strip_think_blocks(text)
+    if has_unclosed_think_block(stripped):
         raise RuntimeError(
             "生成分析标准时，模型的思考过程占满了输出长度，正文被截断。"
             "请换一个不输出长思考过程的模型，或提高模型服务允许的输出长度。"

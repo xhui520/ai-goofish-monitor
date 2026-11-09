@@ -2,7 +2,10 @@
 AI 响应解析工具
 """
 import json
+import re
 from typing import Any
+
+from src.utils import has_unclosed_think_block, strip_think_blocks
 
 
 class EmptyAIResponseError(ValueError):
@@ -38,7 +41,13 @@ def extract_ai_response_content(response: Any) -> str:
         except EmptyAIResponseError:
             reasoning_content = getattr(message, "reasoning_content", None)
             if reasoning_content:
-                return _normalize_text_content(_coerce_content_parts(reasoning_content))
+                # reasoning_content 里可能带着 <think> 推理块或纯推理文本，
+                # 直接当作正文解析会误命中推理中的 JSON 碎片，先剥除推理内容。
+                cleaned_reasoning = strip_think_blocks(
+                    _coerce_content_parts(reasoning_content)
+                )
+                if cleaned_reasoning:
+                    return cleaned_reasoning
             raise
 
     raise ValueError(f"无法识别的AI响应类型: {type(response).__name__}")
@@ -46,11 +55,24 @@ def extract_ai_response_content(response: Any) -> str:
 
 def parse_ai_response_json(content: str) -> dict:
     """解析 AI 文本响应中的 JSON。"""
-    cleaned = _strip_code_fences(content)
+    # 思考模型可能把 <think>...</think> 推理过程混在正文里，其中常含中间
+    # JSON 碎片；直接取“第一个 JSON”会命中碎片导致校验失败。先剥除推理块。
+    cleaned = _strip_code_fences(strip_think_blocks(content))
+    if has_unclosed_think_block(cleaned):
+        # 未闭合的 <think> 说明思考过程占满了输出、正文被截断，
+        # 丢弃该点之后的全部内容，让上层按解析失败走重试。
+        unclosed_index = _find_unclosed_think_index(cleaned)
+        if unclosed_index is not None:
+            cleaned = cleaned[:unclosed_index].strip()
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError as exc:
         return _extract_first_json_value(cleaned, exc)
+
+
+def _find_unclosed_think_index(content: str) -> int | None:
+    match = re.search(r"<(?:think|thinking)>", content, re.IGNORECASE)
+    return match.start() if match else None
 
 
 def _coerce_content_parts(content: Any) -> str:

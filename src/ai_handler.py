@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import re
+import secrets
 import sys
 import shutil
 import traceback
@@ -12,10 +13,16 @@ from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 import requests
 
 # 设置标准输出编码为UTF-8，解决Windows控制台编码问题
+# 注意：使用 reconfigure 原地修改编码，而非替换 sys.stdout 对象——
+# 全局替换会让其他持有旧 stdout 引用的组件（pytest 捕获、uvicorn、日志）失效，
+# 且 detach 在捕获环境下会直接破坏输出流。
 if sys.platform.startswith('win'):
-    import codecs
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
-    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, 'reconfigure'):
+            try:
+                _stream.reconfigure(encoding='utf-8')
+            except (ValueError, OSError):
+                pass  # 流已被接管（如 pytest 捕获）时忽略
 
 from src.config import (
     AI_DEBUG_MODE,
@@ -344,9 +351,11 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
         os.makedirs(logs_dir, exist_ok=True)
         cleanup_ai_logs(logs_dir, keep_days=1)
 
-        # 生成日志文件名（当前时间）
+        # 生成日志文件名（当前时间 + 随机后缀）：
+        # ai_analysis_concurrency > 1 时同一秒内会有多个请求并发写日志，
+        # 仅按秒命名会互相覆盖，追加 token 保证文件名唯一。
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"{current_time}.log"
+        log_filename = f"{current_time}_{secrets.token_hex(4)}.log"
         log_filepath = os.path.join(logs_dir, log_filename)
 
         task_name = product_data.get("任务名称") or product_data.get("任务名") or "unknown"
@@ -373,6 +382,7 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
     api_mode = CHAT_COMPLETIONS_API_MODE
     use_response_format = ENABLE_RESPONSE_FORMAT
     use_temperature = True
+    max_output_tokens = 4000
     for attempt in range(max_retries):
         try:
             # 根据重试次数调整参数
@@ -385,7 +395,7 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
                 model=MODEL_NAME,
                 messages=messages,
                 temperature=current_temperature,
-                max_output_tokens=4000,
+                max_output_tokens=max_output_tokens,
                 enable_json_output=use_response_format,
             )
             if not use_temperature:
@@ -409,6 +419,19 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
                 api_mode,
                 request_params,
             )
+            # 思考模型可能把输出长度耗在推理上导致正文被截断（finish_reason == "length"），
+            # 下一次重试时提高输出上限，避免同样的截断反复出现。
+            choices = getattr(response, "choices", None)
+            finish_reason = getattr(choices[0], "finish_reason", None) if choices else None
+            if (
+                finish_reason == "length"
+                and attempt < max_retries - 1
+            ):
+                max_output_tokens = min(int(max_output_tokens * 1.5), 16000)
+                safe_print(
+                    f"   [AI分析] 第{attempt + 1}次尝试因输出长度被截断"
+                    f"(finish_reason=length)，下次重试 max_output_tokens 提高到 {max_output_tokens}"
+                )
             ai_response_content = extract_ai_response_content(response)
 
             if AI_DEBUG_MODE:
