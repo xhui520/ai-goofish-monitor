@@ -3,10 +3,20 @@
 整合所有路由和服务
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
+from src.api.auth import (
+    SESSION_COOKIE_NAME,
+    SESSION_TTL_SECONDS,
+    clear_login_failures,
+    create_session_token,
+    is_login_rate_limited,
+    register_login_failure,
+    verify_auth,
+    verify_credentials,
+    verify_ws_auth,
+)
 from src.api.routes import (
     dashboard,
     tasks,
@@ -102,16 +112,16 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 注册路由
-app.include_router(tasks.router)
-app.include_router(dashboard.router)
-app.include_router(logs.router)
-app.include_router(settings.router)
-app.include_router(prompts.router)
-app.include_router(results.router)
-app.include_router(login_state.router)
-app.include_router(websocket.router)
-app.include_router(accounts.router)
+# 注册路由（统一鉴权：/api/* 与 /ws 均要求有效会话）
+app.include_router(tasks.router, dependencies=[Depends(verify_auth)])
+app.include_router(dashboard.router, dependencies=[Depends(verify_auth)])
+app.include_router(logs.router, dependencies=[Depends(verify_auth)])
+app.include_router(settings.router, dependencies=[Depends(verify_auth)])
+app.include_router(prompts.router, dependencies=[Depends(verify_auth)])
+app.include_router(results.router, dependencies=[Depends(verify_auth)])
+app.include_router(login_state.router, dependencies=[Depends(verify_auth)])
+app.include_router(websocket.router, dependencies=[Depends(verify_ws_auth)])
+app.include_router(accounts.router, dependencies=[Depends(verify_auth)])
 
 # 挂载静态文件
 # 旧的静态文件目录（用于截图等）
@@ -131,8 +141,8 @@ async def health_check():
     return {"status": "healthy", "message": "服务正常运行"}
 
 
-# 认证状态检查端点
-from fastapi import Request, HTTPException
+# 认证端点
+from fastapi import Request, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -142,11 +152,31 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/auth/status")
-async def auth_status(payload: LoginRequest):
-    """检查认证状态"""
-    if payload.username == app_settings.web_username and payload.password == app_settings.web_password:
-        return {"authenticated": True, "username": payload.username}
-    raise HTTPException(status_code=401, detail="认证失败")
+async def auth_status(payload: LoginRequest, request: Request, response: Response):
+    """登录校验：成功后签发会话令牌（HttpOnly Cookie + 返回 token 供 Bearer 使用）"""
+    client_ip = request.client.host if request.client else "unknown"
+    if is_login_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail="登录失败次数过多，请稍后再试")
+    if not verify_credentials(payload.username, payload.password):
+        register_login_failure(client_ip)
+        raise HTTPException(status_code=401, detail="认证失败")
+    clear_login_failures(client_ip)
+    token = create_session_token()
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+    )
+    return {"authenticated": True, "username": payload.username, "token": token}
+
+
+@app.post("/auth/logout")
+async def auth_logout(response: Response):
+    """退出登录：清除会话 Cookie"""
+    response.delete_cookie(SESSION_COOKIE_NAME)
+    return {"message": "已退出登录"}
 
 
 # 主页路由 - 服务 Vue 3 SPA

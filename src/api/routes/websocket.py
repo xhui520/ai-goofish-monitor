@@ -2,6 +2,8 @@
 WebSocket 路由
 提供实时通信功能
 """
+import asyncio
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Set
 
@@ -10,6 +12,9 @@ router = APIRouter()
 
 # 全局 WebSocket 连接管理
 active_connections: Set[WebSocket] = set()
+
+# 单次广播发送超时，避免半开连接挂起广播进而阻塞任务生命周期钩子
+_BROADCAST_TIMEOUT_SECONDS = 5
 
 
 @router.websocket("/ws")
@@ -48,7 +53,9 @@ async def broadcast_message(message_type: str, data: dict):
 
     for connection in active_connections:
         try:
-            await connection.send_json(message)
+            await asyncio.wait_for(
+                connection.send_json(message), timeout=_BROADCAST_TIMEOUT_SECONDS
+            )
         except Exception:
             disconnected.add(connection)
 
