@@ -86,6 +86,10 @@ docker compose down
 - The published Docker image already includes Chromium, so no extra browser install is required on the host.
 - Update image: `docker compose pull && docker compose up -d`
 - If you change `SERVER_PORT` in `.env`, update the `ports` mapping in `docker-compose.yaml` as well.
+- **Port binding**: `docker-compose.yaml` binds `127.0.0.1:8000:8000` by default (local access only). To expose the service on your LAN, change the mapping to `"8000:8000"` and put it behind a reverse proxy with HTTPS.
+- **Non-root container**: the image runs as a dedicated `appuser`. On Linux hosts you may hit write-permission issues when the mounted directories are owned by a different UID; fix with `sudo chown -R 1000:1000 data state logs images jsonl price_history` (or add `user: "1000:1000"` in compose).
+- **Healthcheck**: compose probes `/health` out of the box — `docker compose ps` shows healthy status and a hung process gets flagged automatically.
+- **Upgrade note**: `config.json` is no longer tracked by git (to prevent local task configs from being committed accidentally). If it disappears after pulling, recreate it from `config.json.example`.
 - `docker-compose.yaml` now mounts the primary SQLite database directory as `./data:/app/data`, with the default database file at `data/app.sqlite3`
 - These paths are persisted by default:
   - `data/` for the SQLite primary store (tasks, results, price history)
@@ -171,7 +175,8 @@ cd web-ui && npm run build
   - `decision_mode=ai`: returns `202` with a `job`; the client should poll for progress.
   - `decision_mode=keyword`: returns the created task directly.
 - `GET /api/tasks/generate-jobs/{job_id}`: fetch AI task-generation progress.
-- `POST /auth/status`: validate Web UI credentials.
+- `POST /auth/status`: validate Web UI credentials and issue a session token.
+- `POST /auth/logout`: sign out and clear the session cookie.
 
 </details>
 
@@ -218,9 +223,13 @@ See `.env.example` for the full list.
 <details>
 <summary>Click to expand authentication notes</summary>
 
-- The Web UI uses a login page and validates credentials through `POST /auth/status`.
-- After login, the frontend stores local auth state for route guards and WebSocket startup.
-- The default credentials are `admin/admin123`; change them in production.
+- The Web UI uses a login page and validates credentials through `POST /auth/status`; on success the server issues an HMAC-signed session token.
+- The token is delivered as an HttpOnly cookie (sent automatically by browsers) and is also accepted as `Authorization: Bearer` for API clients.
+- **All `/api/*` endpoints and the `/ws` WebSocket require login**; requests without a valid session get 401.
+- Sessions last 7 days and are invalidated whenever the service restarts, so you need to sign in again.
+- Security features: constant-time password comparison, and per-IP login rate limiting (5 consecutive failures trigger a 5-minute block with 429).
+- The default credentials are `admin/admin123`; change them in production via `WEB_USERNAME` / `WEB_PASSWORD` in `.env`.
+- Docker deployments bind to `127.0.0.1` only and run as non-root by default; use a reverse proxy with HTTPS when exposing the service externally.
 
 </details>
 

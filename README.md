@@ -48,6 +48,10 @@ docker compose up -d
 - 官方镜像地址：`ghcr.io/usagi-org/ai-goofish:latest`
 - 更新镜像：`docker compose pull && docker compose up -d`
 - 如果你修改了 `.env` 中的 `SERVER_PORT`，请同步更新 `docker-compose.yaml` 里的端口映射。
+- **端口绑定**：`docker-compose.yaml` 默认只绑定 `127.0.0.1:8000:8000`（仅本机可访问）。如需局域网访问，请将端口映射改为 `"8000:8000"` 并配合反向代理与 HTTPS 使用。
+- **非 root 容器**：镜像内以专用用户 `appuser` 运行。Linux 宿主机上如挂载目录属主与容器用户不一致，可能遇到写入权限问题，执行 `sudo chown -R 1000:1000 data state logs images jsonl price_history`（或在 compose 中加 `user: "1000:1000"`）即可。
+- **健康检查**：compose 已内置 `/health` 探活，`docker compose ps` 可查看 healthy 状态，进程僵死会被自动标记。
+- **升级提示**：`config.json` 已不再纳入版本控制（避免本地任务配置被误提交）。拉取新版本后若该文件消失，从 `config.json.example` 重建即可。
 - `docker-compose.yaml` 默认会把 SQLite 主库挂载到 `./data:/app/data`，数据库文件默认为 `data/app.sqlite3`
 - 目前默认持久化这些目录：
     - `data/`  SQLite 主存储（任务、结果、价格历史）
@@ -184,7 +188,8 @@ cd web-ui && npm run build
   - `decision_mode=ai`：返回 `202` 和 `job`，需要继续轮询进度。
   - `decision_mode=keyword`：直接返回已创建任务。
 - `GET /api/tasks/generate-jobs/{job_id}`：查询 AI 任务生成进度。
-- `POST /auth/status`：校验 Web UI 登录凭据。
+- `POST /auth/status`：校验 Web UI 登录凭据并签发会话令牌。
+- `POST /auth/logout`：退出登录并清除会话 Cookie。
 
 </details>
 
@@ -231,9 +236,13 @@ cd web-ui && npm run build
 <details>
 <summary>点击展开认证说明</summary>
 
-- Web UI 当前使用登录页收集账号密码，并通过 `POST /auth/status` 校验。
-- 登录成功后，前端会在浏览器本地保存登录状态，用于路由守卫和 WebSocket 初始化。
-- 默认账号密码为 `admin/admin123`，生产环境请务必修改。
+- Web UI 使用登录页收集账号密码，通过 `POST /auth/status` 校验；登录成功后服务端签发 HMAC 签名的会话令牌。
+- 会话令牌通过 HttpOnly Cookie 传递（浏览器自动携带），同时兼容 `Authorization: Bearer` 方式供 API 客户端使用。
+- **所有 `/api/*` 接口与 `/ws` WebSocket 均要求登录**，未携带有效会话的请求返回 401。
+- 会话有效期 7 天；服务重启后所有会话失效，需重新登录。
+- 安全特性：密码常数时间比较；同一 IP 连续 5 次登录失败将触发 5 分钟限速（429）。
+- 默认账号密码为 `admin/admin123`，生产环境请务必通过 `.env` 中的 `WEB_USERNAME` / `WEB_PASSWORD` 修改。
+- Docker 部署默认仅绑定 `127.0.0.1`，配合非 root 容器运行；如需对外暴露请使用反向代理并启用 HTTPS。
 
 </details>
 
