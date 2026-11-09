@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useTasks } from '@/composables/useTasks'
 import type { Task, TaskUpdate } from '@/types/task.d.ts'
@@ -34,6 +34,7 @@ const {
   stoppingTaskIds,
 } = useTasks()
 const route = useRoute()
+const router = useRouter()
 
 // State for dialogs
 const isEditDialogOpen = ref(false)
@@ -84,13 +85,21 @@ function handleEditTask(task: Task) {
   isEditDialogOpen.value = true
 }
 
+// ?edit=<id> 打开编辑框：打开后立即清除 query 参数，
+// 否则每次 WebSocket 刷新 tasks 都会重新触发本 watcher，对话框关不掉。
+const handledEditIds = new Set<number>()
 watch(
   () => [route.query.edit, tasks.value],
   () => {
     const editTaskId = typeof route.query.edit === 'string' ? Number(route.query.edit) : NaN
-    if (!Number.isFinite(editTaskId)) return
+    if (!Number.isFinite(editTaskId)) {
+      handledEditIds.clear()
+      return
+    }
     const match = tasks.value.find((task) => task.id === editTaskId)
-    if (!match) return
+    if (!match || handledEditIds.has(editTaskId)) return
+    handledEditIds.add(editTaskId)
+    router.replace({ query: { ...route.query, edit: undefined } })
     selectedTask.value = match
     isEditDialogOpen.value = true
   },

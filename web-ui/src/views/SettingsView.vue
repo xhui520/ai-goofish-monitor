@@ -169,11 +169,16 @@ watch(selectedPrompt, async (value) => {
   promptError.value = null
   try {
     const data = await getPromptContent(value)
+    // 快速切换文件时旧响应可能后到，丢弃过期内容
+    if (selectedPrompt.value !== value) return
     promptContent.value = data.content
   } catch (e) {
+    if (selectedPrompt.value !== value) return
     promptError.value = (e as Error).message || t('settings.prompts.promptContentFailed')
   } finally {
-    isPromptLoading.value = false
+    if (selectedPrompt.value === value) {
+      isPromptLoading.value = false
+    }
   }
 })
 </script>

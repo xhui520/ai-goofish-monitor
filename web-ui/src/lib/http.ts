@@ -40,7 +40,15 @@ export async function http(url: string, options: FetchOptions = {}) {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`)
+    const detail = errorData.detail
+    // FastAPI 422 的 detail 是对象数组，直接 new Error 会得到 "[object Object]"
+    const message =
+      typeof detail === 'string'
+        ? detail
+        : detail
+          ? JSON.stringify(detail)
+          : `HTTP error! status: ${response.status}`
+    throw new Error(message)
   }
 
   // Handle 204 No Content

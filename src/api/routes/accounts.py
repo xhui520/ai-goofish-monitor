@@ -100,9 +100,16 @@ async def create_account(data: AccountCreate):
     path = _account_path(account_name)
     if os.path.exists(path):
         raise HTTPException(status_code=409, detail="账号已存在")
-    async with aiofiles.open(path, "w", encoding="utf-8") as f:
-        await f.write(data.content)
+    await _write_account_file(path, data.content)
     return {"message": "账号已添加", "name": account_name, "path": path}
+
+
+async def _write_account_file(path: str, content: str) -> None:
+    """先写临时文件再原子替换，避免爬虫子进程读到写了一半的 cookie 文件。"""
+    tmp_path = f"{path}.tmp"
+    async with aiofiles.open(tmp_path, "w", encoding="utf-8") as f:
+        await f.write(content)
+    os.replace(tmp_path, path)
 
 
 @router.put("/{name}", response_model=dict)
@@ -114,8 +121,7 @@ async def update_account(name: str, data: AccountUpdate):
     path = _account_path(account_name)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="账号不存在")
-    async with aiofiles.open(path, "w", encoding="utf-8") as f:
-        await f.write(data.content)
+    await _write_account_file(path, data.content)
     return {"message": "账号已更新", "name": account_name, "path": path}
 
 

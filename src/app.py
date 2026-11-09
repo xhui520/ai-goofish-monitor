@@ -77,6 +77,11 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
     print("正在启动应用...")
+    if app_settings.web_password == "admin123":
+        print(
+            "警告: 当前仍在使用默认 Web 密码 admin123，所有可访问本服务的人"
+            "都可以登录。请尽快在 .env 中设置 WEB_USERNAME / WEB_PASSWORD。"
+        )
     bootstrap_sqlite_storage()
     cleanup_task_logs(keep_days=app_settings.task_log_retention_days)
 
@@ -168,6 +173,7 @@ async def auth_status(payload: LoginRequest, request: Request, response: Respons
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         samesite="lax",
+        secure=app_settings.web_cookie_secure,
     )
     return {"authenticated": True, "username": payload.username, "token": token}
 

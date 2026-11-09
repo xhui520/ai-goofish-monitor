@@ -229,6 +229,15 @@ async def update_task(
                 print(f"新的分析标准已保存: {criteria_target_file}")
             except Exception as exc:
                 print(f"替换 criteria 文件 {criteria_target_file} 失败: {exc}")
+                if os.path.exists(criteria_temp_file):
+                    try:
+                        os.remove(criteria_temp_file)
+                    except OSError:
+                        pass
+                raise HTTPException(
+                    status_code=500,
+                    detail="保存新的分析标准失败，原文件未改动，请重试或查看服务日志",
+                )
         await _reload_scheduler_if_needed(service, scheduler_service)
         return {"message": "任务更新成功", "task": serialize_task(task, scheduler_service)}
     except ValueError as e:

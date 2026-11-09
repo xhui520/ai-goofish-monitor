@@ -414,3 +414,77 @@ def test_results_blacklist_rules_hide_items_from_view_and_insights(tmp_path, mon
     assert download_resp.status_code == 200
     assert "MacBook Air Intel i5 8+256" in download_resp.text
     assert "MacBook Pro Intel 13寸" in download_resp.text
+
+
+def test_ai_error_record_replaced_by_successful_retry(tmp_path, monkeypatch):
+    """回归：AI 失败记录被重新分析成功后，必须覆盖旧的 error 记录。
+
+    若继续用 INSERT OR IGNORE，UNIQUE 约束会让成功结果被静默忽略，
+    error 记录永不收敛，商品每轮都会重复分析。
+    """
+    import asyncio
+
+    from src.infrastructure.persistence.sqlite_bootstrap import (
+        bootstrap_sqlite_storage,
+        reset_bootstrap_state,
+    )
+    from src.infrastructure.persistence.sqlite_connection import sqlite_connection
+    from src.services.result_storage_service import (
+        load_processed_link_keys,
+        save_result_record,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    reset_bootstrap_state()
+    bootstrap_sqlite_storage()
+
+    base_record = {
+        "搜索关键字": "sony a7m4",
+        "任务名称": "Sony A7M4",
+        "爬取时间": "2026-01-01T01:00:00",
+        "商品信息": {
+            "商品ID": "1001",
+            "商品标题": "Sony A7M4 body only",
+            "商品链接": "https://www.goofish.com/item?id=1001",
+            "当前售价": "¥10000",
+        },
+        "卖家信息": {"卖家昵称": "seller-a"},
+    }
+
+    error_record = dict(base_record)
+    error_record["ai_analysis"] = {
+        "analysis_source": "ai",
+        "analysis_status": "error",
+        "is_recommended": False,
+        "reason": "AI分析异常: 超时",
+        "error": "timeout",
+    }
+    asyncio.run(save_result_record(error_record, "sony a7m4"))
+
+    # 失败记录不参与去重 → 下一轮会重新分析
+    assert load_processed_link_keys("sony a7m4") == set()
+
+    ok_record = dict(base_record)
+    ok_record["爬取时间"] = "2026-01-01T02:00:00"
+    ok_record["ai_analysis"] = {
+        "analysis_source": "ai",
+        "analysis_status": "ok",
+        "is_recommended": True,
+        "reason": "符合购买预期",
+        "keyword_hit_count": 0,
+    }
+    asyncio.run(save_result_record(ok_record, "sony a7m4"))
+
+    keys = load_processed_link_keys("sony a7m4")
+    assert len(keys) == 1, "成功记录应参与去重，且不应残留重复行"
+
+    with sqlite_connection() as conn:
+        rows = conn.execute(
+            "SELECT raw_json, is_recommended FROM result_items WHERE item_id = ?",
+            ("1001",),
+        ).fetchall()
+    assert len(rows) == 1, "重分析成功后应覆盖旧 error 记录而不是新增一行"
+    stored = json.loads(str(rows[0]["raw_json"]))
+    assert stored["ai_analysis"]["analysis_status"] == "ok"
+    assert stored["ai_analysis"]["reason"] == "符合购买预期"
+    assert rows[0]["is_recommended"] == 1

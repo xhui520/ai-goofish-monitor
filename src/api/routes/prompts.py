@@ -59,8 +59,11 @@ async def update_prompt(
         raise HTTPException(status_code=404, detail="Prompt 文件未找到")
 
     try:
-        async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
+        # 先写临时文件再原子替换，避免读到写了一半的 prompt 内容
+        tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+        async with aiofiles.open(tmp_path, 'w', encoding='utf-8') as f:
             await f.write(prompt_update.content)
+        os.replace(tmp_path, filepath)
         return {"message": f"Prompt 文件 '{filepath.name}' 更新成功"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入文件时出错: {e}")

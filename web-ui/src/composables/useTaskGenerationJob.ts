@@ -22,8 +22,11 @@ export function useTaskGenerationJob() {
 
   async function refreshJob() {
     if (!activeJob.value) return
+    // 记录发出时的 job_id：切换/重开新任务后，旧任务的在途响应不得写回 activeJob
+    const requestJobId = activeJob.value.job_id
     try {
-      const nextJob = await getTaskGenerationJob(activeJob.value.job_id)
+      const nextJob = await getTaskGenerationJob(requestJobId)
+      if (activeJob.value?.job_id !== requestJobId) return
       activeJob.value = nextJob
       pollingError.value = null
       if (isTerminalStatus(nextJob.status)) {
@@ -33,6 +36,7 @@ export function useTaskGenerationJob() {
       }
       scheduleNextPoll()
     } catch (error) {
+      if (activeJob.value?.job_id !== requestJobId) return
       isPolling.value = false
       clearTimer()
       pollingError.value = error as Error

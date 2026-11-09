@@ -34,14 +34,10 @@ const emit = defineEmits<{
             <h3 class="font-semibold text-slate-900">{{ t('rotation.account.title') }}</h3>
             <p class="text-sm text-slate-500">{{ t('rotation.account.description') }}</p>
           </div>
-          <Switch v-model:checked="settings.ACCOUNT_ROTATION_ENABLED" />
+          <Switch v-model="settings.ACCOUNT_ROTATION_ENABLED" />
         </div>
 
         <div class="grid gap-4">
-          <div class="grid gap-2">
-            <Label>{{ t('rotation.account.stateDir') }}</Label>
-            <Input v-model="settings.ACCOUNT_STATE_DIR" placeholder="state" />
-          </div>
           <div class="grid gap-2">
             <Label>{{ t('rotation.mode') }}</Label>
             <Select v-model="settings.ACCOUNT_ROTATION_MODE">
@@ -73,7 +69,7 @@ const emit = defineEmits<{
             <h3 class="font-semibold text-slate-900">{{ t('rotation.proxy.title') }}</h3>
             <p class="text-sm text-slate-500">{{ t('rotation.proxy.description') }}</p>
           </div>
-          <Switch v-model:checked="settings.PROXY_ROTATION_ENABLED" />
+          <Switch v-model="settings.PROXY_ROTATION_ENABLED" />
         </div>
 
         <div class="grid gap-4">

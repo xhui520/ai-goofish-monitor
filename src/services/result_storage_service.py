@@ -158,6 +158,39 @@ def _derive_analysis_status(analysis: dict) -> str:
     return "ok"
 
 
+def _existing_record_is_errored(conn, filename: str, link_unique_key: str) -> bool:
+    """判断已存记录是否为 AI 分析失败版本（与去重排除谓词保持一致）。"""
+    if not link_unique_key:
+        return False
+    if _json1_supported(conn):
+        row = conn.execute(
+            """
+            SELECT 1 FROM result_items
+            WHERE result_filename = ?
+              AND link_unique_key = ?
+              AND (
+                  COALESCE(
+                      json_extract(raw_json, '$.ai_analysis.analysis_status'), ''
+                  ) = 'error'
+                  OR json_extract(raw_json, '$.ai_analysis.error') IS NOT NULL
+              )
+            """,
+            (filename, link_unique_key),
+        ).fetchone()
+        return row is not None
+    row = conn.execute(
+        "SELECT raw_json FROM result_items WHERE result_filename = ? AND link_unique_key = ?",
+        (filename, link_unique_key),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        record = json.loads(str(row["raw_json"]))
+    except json.JSONDecodeError:
+        return False
+    return _record_ai_analysis_errored(record)
+
+
 def _save_result_record_sync(record: dict, keyword: str) -> bool:
     bootstrap_sqlite_storage()
     item = record.get("商品信息", {}) or {}
@@ -174,9 +207,15 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
         keyword_hit_count = 0
 
     with sqlite_connection() as conn:
+        # 旧记录是 AI 失败版本且新记录分析成功时，用 REPLACE 覆盖，
+        # 否则成功结果会被 UNIQUE 约束静默忽略，error 记录永远无法收敛
+        conflict_clause = "OR IGNORE"
+        if analysis.get("analysis_status") != "error":
+            if _existing_record_is_errored(conn, build_result_filename(keyword), link_unique_key):
+                conflict_clause = "OR REPLACE"
         conn.execute(
-            """
-            INSERT OR IGNORE INTO result_items (
+            f"""
+            INSERT {conflict_clause} INTO result_items (
                 result_filename, keyword, task_name, crawl_time, publish_time, price,
                 price_display, item_id, title, link, link_unique_key, seller_nickname,
                 is_recommended, analysis_source, keyword_hit_count, raw_json

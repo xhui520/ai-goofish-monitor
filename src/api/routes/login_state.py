@@ -30,8 +30,11 @@ async def update_login_state(
         raise HTTPException(status_code=400, detail="提供的内容不是有效的JSON格式。")
 
     try:
-        async with aiofiles.open(state_file, 'w', encoding='utf-8') as f:
+        # 先写临时文件再原子替换，避免爬虫子进程读到写了一半的登录态
+        tmp_file = f"{state_file}.tmp"
+        async with aiofiles.open(tmp_file, 'w', encoding='utf-8') as f:
             await f.write(data.content)
+        os.replace(tmp_file, state_file)
         return {"message": f"登录状态文件 '{state_file}' 已成功更新。"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入登录状态文件时出错: {e}")

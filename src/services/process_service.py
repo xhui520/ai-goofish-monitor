@@ -288,7 +288,7 @@ class ProcessService:
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-                await taskkill.wait()
+                await asyncio.wait_for(taskkill.wait(), timeout=10)
                 taskkilled = taskkill.returncode == 0
             except Exception as exc:
                 print(f"taskkill 终止进程树失败 (ID: {task_id}): {exc}")

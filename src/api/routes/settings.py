@@ -186,12 +186,13 @@ async def test_notification_settings(payload: NotificationTestRequest):
 
 @router.get("/rotation")
 async def get_rotation_settings():
+    # ACCOUNT_STATE_DIR 属部署配置（仅可通过 .env 修改），不再经 API 回显，
+    # 避免前端面板展示成可编辑项造成"假保存"
     return {
         "ACCOUNT_ROTATION_ENABLED": _env_bool("ACCOUNT_ROTATION_ENABLED", False),
         "ACCOUNT_ROTATION_MODE": env_manager.get_value("ACCOUNT_ROTATION_MODE", "per_task"),
         "ACCOUNT_ROTATION_RETRY_LIMIT": _env_int("ACCOUNT_ROTATION_RETRY_LIMIT", 2),
         "ACCOUNT_BLACKLIST_TTL": _env_int("ACCOUNT_BLACKLIST_TTL", 300),
-        "ACCOUNT_STATE_DIR": env_manager.get_value("ACCOUNT_STATE_DIR", "state"),
         "PROXY_ROTATION_ENABLED": _env_bool("PROXY_ROTATION_ENABLED", False),
         "PROXY_ROTATION_MODE": env_manager.get_value("PROXY_ROTATION_MODE", "per_task"),
         "PROXY_POOL": env_manager.get_value("PROXY_POOL", ""),

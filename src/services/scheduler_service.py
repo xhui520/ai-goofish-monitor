@@ -71,11 +71,16 @@ class SchedulerService:
         if self._loop is not None and current_loop is not self._loop:
             if current_loop is not None:
                 # 在另一个事件循环中：转发到启动循环并等待完成
-                await asyncio.wrap_future(
-                    asyncio.run_coroutine_threadsafe(
-                        self._reload_jobs_impl(tasks), self._loop
-                    )
+                future = asyncio.run_coroutine_threadsafe(
+                    self._reload_jobs_impl(tasks), self._loop
                 )
+                try:
+                    await asyncio.wait_for(
+                        asyncio.wrap_future(future),
+                        timeout=RELOAD_FROM_THREAD_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    print("警告: 调度器跨循环重载等待超时，稍后可手动刷新任务列表")
             else:
                 # 在没有事件循环的线程中：阻塞等待启动循环完成
                 asyncio.run_coroutine_threadsafe(

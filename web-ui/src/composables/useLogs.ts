@@ -32,8 +32,12 @@ export function useLogs() {
     if (isLoading.value) return
     if (currentTaskId.value === null) return
     isLoading.value = true
+    // 记录发出时的任务 ID：切换任务后旧任务的在途响应不得写入新任务视图
+    const requestTaskId = currentTaskId.value
+    const requestPos = currentPos.value
     try {
-      const data = await logsApi.getLogs(currentPos.value, currentTaskId.value)
+      const data = await logsApi.getLogs(requestPos, requestTaskId)
+      if (currentTaskId.value !== requestTaskId) return
       if (data.new_pos < currentPos.value) {
         // Log file rotated or cleared.
         logs.value = ''
@@ -43,9 +47,12 @@ export function useLogs() {
       }
       currentPos.value = data.new_pos
     } catch (e) {
+      if (currentTaskId.value !== requestTaskId) return
       if (e instanceof Error) error.value = e
     } finally {
-      isLoading.value = false
+      if (currentTaskId.value === requestTaskId) {
+        isLoading.value = false
+      }
     }
   }
 
@@ -53,16 +60,21 @@ export function useLogs() {
     if (isFetchingHistory.value) return
     if (currentTaskId.value === null) return
     isFetchingHistory.value = true
+    const requestTaskId = currentTaskId.value
     try {
-      const data = await logsApi.getLogTail(currentTaskId.value, 0, limitLines)
+      const data = await logsApi.getLogTail(requestTaskId, 0, limitLines)
+      if (currentTaskId.value !== requestTaskId) return
       logs.value = data.content || ''
       historyOffset.value = data.next_offset
       hasMoreHistory.value = data.has_more
       currentPos.value = data.new_pos
     } catch (e) {
+      if (currentTaskId.value !== requestTaskId) return
       if (e instanceof Error) error.value = e
     } finally {
-      isFetchingHistory.value = false
+      if (currentTaskId.value === requestTaskId) {
+        isFetchingHistory.value = false
+      }
     }
   }
 
@@ -71,8 +83,11 @@ export function useLogs() {
     if (!hasMoreHistory.value) return
     if (currentTaskId.value === null) return
     isFetchingHistory.value = true
+    const requestTaskId = currentTaskId.value
+    const requestOffset = historyOffset.value
     try {
-      const data = await logsApi.getLogTail(currentTaskId.value, historyOffset.value, limitLines)
+      const data = await logsApi.getLogTail(requestTaskId, requestOffset, limitLines)
+      if (currentTaskId.value !== requestTaskId) return
       if (data.content) {
         logs.value = logs.value ? `${data.content}\n${logs.value}` : data.content
       }
@@ -80,9 +95,12 @@ export function useLogs() {
       hasMoreHistory.value = data.has_more
       currentPos.value = data.new_pos
     } catch (e) {
+      if (currentTaskId.value !== requestTaskId) return
       if (e instanceof Error) error.value = e
     } finally {
-      isFetchingHistory.value = false
+      if (currentTaskId.value === requestTaskId) {
+        isFetchingHistory.value = false
+      }
     }
   }
 

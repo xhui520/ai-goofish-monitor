@@ -107,8 +107,9 @@ def _cookie_changed(
 class _FileLock:
     """跨平台的排他文件锁：POSIX 用 fcntl.flock，Windows 用 msvcrt.locking。
 
-    msvcrt.locking(LK_LOCK) 在被占用时会重试约 10 秒后抛 OSError，
-    因此 Windows 上真正拿不到锁时以异常暴露，避免静默并发写坏状态文件。
+    msvcrt.locking(LK_LOCK) 在被占用时会重试约 10 秒后抛 OSError；
+    拿不到锁时降级为无锁继续并告警，避免长争用把任务启动、成功/失败
+    上报等调用路径直接打断（写入本身仍是原子替换，最坏丢失一次并发更新）。
     """
 
     def __init__(self, fh):
@@ -120,8 +121,11 @@ class _FileLock:
             import msvcrt
 
             self._fh.seek(0)
-            msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
-            self._locked = True
+            try:
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
+                self._locked = True
+            except OSError as exc:
+                print(f"[FailureGuard] 文件锁获取失败，降级为无锁继续: {exc}")
         else:
             try:
                 import fcntl

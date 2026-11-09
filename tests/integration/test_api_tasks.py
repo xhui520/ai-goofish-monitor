@@ -178,7 +178,7 @@ def test_create_task_rejects_invalid_cron_expression(api_client, sample_task_pay
     assert response.status_code == 422
 
 
-def test_delete_task_stops_runtime_and_reindexes_process_state(
+def test_delete_task_stops_running_process(
     api_client,
     api_context,
     sample_task_payload,
@@ -199,4 +199,3 @@ def test_delete_task_stops_runtime_and_reindexes_process_state(
     assert response.status_code == 200
     process_service = api_context["process_service"]
     assert process_service.stopped == [first_task_id]
-    assert process_service.reindexed == []

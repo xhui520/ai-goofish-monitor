@@ -85,7 +85,8 @@ def test_rotation_settings_include_account_rotation_fields(tmp_path, monkeypatch
     payload = response.json()
     assert payload["ACCOUNT_ROTATION_ENABLED"] is False
     assert payload["ACCOUNT_ROTATION_MODE"] == "per_task"
-    assert payload["ACCOUNT_STATE_DIR"] == "state"
+    # ACCOUNT_STATE_DIR 属部署配置，不再经 API 回显，避免前端面板假保存
+    assert "ACCOUNT_STATE_DIR" not in payload
 
     update_response = client.put(
         "/api/settings/rotation",

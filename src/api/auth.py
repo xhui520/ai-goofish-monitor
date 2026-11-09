@@ -72,6 +72,9 @@ def _prune_login_failures(client_ip: str, now: float) -> None:
     cutoff = now - LOGIN_FAILURE_WINDOW_SECONDS
     while window and window[0] < cutoff:
         window.popleft()
+    # 清掉空键，避免大量一次性来源 IP 让字典无限增长
+    if not window:
+        _login_failures.pop(client_ip, None)
 
 
 def is_login_rate_limited(client_ip: str) -> bool:

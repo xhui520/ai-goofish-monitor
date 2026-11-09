@@ -15,20 +15,28 @@ export function useTasks() {
   const stoppingTaskIds = ref<Set<number>>(new Set())
   const { on } = useWebSocket()
 
+  // 请求序号守卫：ws 事件会背靠背触发多次 fetchTasks，
+  // 旧响应后到时不得覆盖新列表
+  let fetchTasksSeq = 0
+
   async function fetchTasks(options?: { silent?: boolean }) {
+    const seq = ++fetchTasksSeq
     if (!options?.silent) {
       isLoading.value = true
     }
     error.value = null
     try {
-      tasks.value = await taskApi.getAllTasks()
+      const next = await taskApi.getAllTasks()
+      if (seq !== fetchTasksSeq) return
+      tasks.value = next
     } catch (e) {
+      if (seq !== fetchTasksSeq) return
       if (e instanceof Error) {
         error.value = e
       }
       console.error(e)
     } finally {
-      if (!options?.silent) {
+      if (!options?.silent && seq === fetchTasksSeq) {
         isLoading.value = false
       }
     }

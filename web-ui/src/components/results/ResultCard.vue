@@ -23,10 +23,12 @@ const emit = defineEmits<{
 }>()
 const { t } = useI18n()
 
-const info = props.item.商品信息
-const seller = props.item.卖家信息
-const ai = props.item.ai_analysis
-const priceInsight = props.item.price_insight
+// keyed 复用下 props.item 会被整体替换，这里必须保持响应式，
+// 一次性解构会让卡片在数据刷新后显示陈旧内容
+const info = computed(() => props.item.商品信息)
+const seller = computed(() => props.item.卖家信息)
+const ai = computed(() => props.item.ai_analysis)
+const priceInsight = computed(() => props.item.price_insight)
 
 // 商品链接来自爬取数据，不属可信输入。仅放行 http(s) 协议，
 // 防止 javascript:/data: 等危险 URI 通过 :href 在点击时被执行。
@@ -37,20 +39,22 @@ function safeExternalUrl(url: unknown): string | undefined {
   return undefined
 }
 
-const safeItemUrl = safeExternalUrl(info.商品链接)
+const safeItemUrl = computed(() => safeExternalUrl(info.value.商品链接))
 
-const isRecommended = ai?.is_recommended === true
+const isRecommended = computed(() => ai.value?.is_recommended === true)
 const recommendationStatus = computed(() => {
-  if (ai?.is_recommended === true) return { label: t('results.card.strongRecommend'), color: 'bg-emerald-500', icon: CheckCircle2, text: 'text-emerald-600', bg: 'bg-emerald-50' }
-  if (ai?.is_recommended === false) return { label: t('results.card.notRecommended'), color: 'bg-rose-500', icon: XCircle, text: 'text-rose-600', bg: 'bg-rose-50' }
+  if (ai.value?.is_recommended === true) return { label: t('results.card.strongRecommend'), color: 'bg-emerald-500', icon: CheckCircle2, text: 'text-emerald-600', bg: 'bg-emerald-50' }
+  if (ai.value?.is_recommended === false) return { label: t('results.card.notRecommended'), color: 'bg-rose-500', icon: XCircle, text: 'text-rose-600', bg: 'bg-rose-50' }
   return { label: t('results.card.pending'), color: 'bg-amber-500', icon: AlertCircle, text: 'text-amber-600', bg: 'bg-amber-50' }
 })
 
-const imageUrl = info.商品图片列表?.[0] || info.商品主图链接 || ''
-const crawlTime = props.item.爬取时间
-  ? formatDateTime(props.item.爬取时间, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-  : t('common.unknown')
-const matchScore = ai?.value_score ?? 0
+const imageUrl = computed(() => info.value.商品图片列表?.[0] || info.value.商品主图链接 || '')
+const crawlTime = computed(() =>
+  props.item.爬取时间
+    ? formatDateTime(props.item.爬取时间, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : t('common.unknown')
+)
+const matchScore = computed(() => ai.value?.value_score ?? 0)
 const isHidden = computed(() => props.item._effective_hidden === true || props.item._status === 'hidden')
 const isRuleHidden = computed(() => props.item._hidden_reason === 'rule')
 const canToggleBlock = computed(() => props.item._hidden_reason !== 'rule' && props.item._hidden_reason !== 'expired')

@@ -48,17 +48,18 @@ async def broadcast_message(message_type: str, data: dict):
         "data": data
     }
 
-    # 移除已断开的连接
-    disconnected = set()
+    # 快照当前连接：发送期间会有新连接加入/旧连接断开，
+    # 直接迭代 set 会触发 "Set changed size during iteration"
+    snapshot = list(active_connections)
 
-    for connection in active_connections:
+    async def _send(connection: WebSocket) -> None:
         try:
             await asyncio.wait_for(
                 connection.send_json(message), timeout=_BROADCAST_TIMEOUT_SECONDS
             )
         except Exception:
-            disconnected.add(connection)
+            active_connections.discard(connection)
 
-    # 清理断开的连接
-    for connection in disconnected:
-        active_connections.discard(connection)
+    # 并发发送，僵死连接的超时等待不会串行拖长总耗时
+    if snapshot:
+        await asyncio.gather(*(_send(conn) for conn in snapshot))

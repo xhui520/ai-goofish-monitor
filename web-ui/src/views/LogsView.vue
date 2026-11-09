@@ -79,7 +79,13 @@ async function handleScroll() {
   lastScrollTop.value = logContainer.value.scrollTop
   lastScrollHeight.value = logContainer.value.scrollHeight
   isPrepending.value = true
+  const lengthBefore = logs.value.length
   await loadPrevious(50)
+  // 空内容时 logs 不变、watch 不触发，这里兜底复位，避免后续追加被误判为 prepend；
+  // 有新内容时保持 isPrepending 交给 logs watcher 做滚动位置还原
+  if (logs.value.length === lengthBefore) {
+    isPrepending.value = false
+  }
 }
 
 function openClearDialog() {
