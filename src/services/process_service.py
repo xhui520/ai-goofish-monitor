@@ -13,7 +13,6 @@ from datetime import datetime
 from typing import Awaitable, Callable, Dict, TextIO
 
 from src.ai_handler import send_ntfy_notification
-from src.config import STATE_FILE
 from src.failure_guard import FailureGuard
 from src.infrastructure.persistence.sqlite_task_repository import find_task_by_name_sync
 from src.utils import build_task_log_path
@@ -74,7 +73,10 @@ class ProcessService:
         except Exception:
             pass
 
-        return STATE_FILE if os.path.exists(STATE_FILE) else None
+        # 根目录登录态文件名与爬虫侧约定一致，这里不导入 src.config，
+        # 避免服务端进程在导入期创建 AI 客户端等副作用
+        root_state_file = "xianyu_state.json"
+        return root_state_file if os.path.exists(root_state_file) else None
 
     def is_running(self, task_id: int) -> bool:
         """检查任务是否正在运行"""

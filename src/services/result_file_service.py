@@ -1,6 +1,7 @@
 """
 结果记录富化与文件名校验服务
 """
+from pathlib import Path
 
 from src.infrastructure.persistence.storage_names import normalize_keyword_from_filename
 from src.services.price_history_service import (
@@ -12,7 +13,12 @@ from src.services.result_storage_service import load_visible_result_item_ids
 
 
 def validate_result_filename(filename: str) -> None:
-    if not filename.endswith(".jsonl") or "/" in filename or ".." in filename:
+    # 白名单式校验：拒绝路径分隔符（含 Windows 反斜杠）、盘符与任何路径组件
+    if (
+        not isinstance(filename, str)
+        or not filename.endswith(".jsonl")
+        or Path(filename).name != filename
+    ):
         raise ValueError("无效的文件名")
 
 

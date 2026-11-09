@@ -154,9 +154,10 @@ def _collect_record_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
         recommendation_time = parse_timestamp(
             latest_recommendation.get("爬取时间") if latest_recommendation else None
         )
-        if latest_recommendation is None or (crawl_time and recommendation_time and crawl_time > recommendation_time):
-            latest_recommendation = record
-        elif latest_recommendation is None and crawl_time:
+        # crawl_time 无法解析（None）时按"不晚于现有记录"处理，避免旧条目永远占位
+        if latest_recommendation is None or (
+            crawl_time and (recommendation_time is None or crawl_time > recommendation_time)
+        ):
             latest_recommendation = record
 
     return {

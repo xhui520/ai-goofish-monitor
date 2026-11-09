@@ -3,12 +3,33 @@
 统一管理所有通知渠道
 """
 import asyncio
+import re
 from typing import Dict, List
 
 from src.infrastructure.external.notification_clients.base import NotificationClient
 from src.infrastructure.external.notification_clients.factory import build_notification_clients
 from src.services.notification_config_service import load_notification_settings
 from src.infrastructure.config.settings import NotificationSettings
+
+# raise_for_status 的异常文本包含完整请求 URL，可能携带
+# Telegram bot token、Bark key、企业微信 webhook key 等凭据。
+# 回传给前端的错误消息必须先脱敏。
+_SENSITIVE_URL_PARTS = re.compile(
+    r"""
+    (?:
+        bot\d[^/\s&'"]+                      # Telegram: /bot<token>/method
+      | [?&](?:key|token|secret)=[^\s&'"]+   # 查询串中的 key/token/secret
+      | /webhook/[^\s&'"]+                   # 企业微信等 webhook/<key>
+      | (?<=/)[A-Za-z0-9_.:-]{20,}(?=[/?]|$) # 路径中的长随机凭据段（如 Bark key）
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def sanitize_error_message(exc: Exception) -> str:
+    """生成可安全展示给前端的错误消息（去除 URL 中的凭据段）。"""
+    return _SENSITIVE_URL_PARTS.sub("<REDACTED>", str(exc))
 
 
 class NotificationService:
@@ -68,7 +89,7 @@ class NotificationService:
                 "channel": client.channel_key,
                 "label": client.display_name,
                 "success": False,
-                "message": str(exc),
+                "message": sanitize_error_message(exc),
             }
 
 

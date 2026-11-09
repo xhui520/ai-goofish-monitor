@@ -49,10 +49,17 @@ def get_notification_service() -> NotificationService:
     return build_notification_service()
 
 
+# AIClient 持有底层 httpx 连接池，按请求新建会泄漏连接并重复覆写环境，
+# 这里使用进程级单例，关闭统一由 lifespan 时的 ai_client.close() 处理
+_ai_service_singleton: AIAnalysisService | None = None
+
+
 def get_ai_service() -> AIAnalysisService:
-    """获取AI分析服务实例"""
-    ai_client = AIClient()
-    return AIAnalysisService(ai_client)
+    """获取AI分析服务实例（进程级单例）"""
+    global _ai_service_singleton
+    if _ai_service_singleton is None:
+        _ai_service_singleton = AIAnalysisService(AIClient())
+    return _ai_service_singleton
 
 
 def get_process_service() -> ProcessService:

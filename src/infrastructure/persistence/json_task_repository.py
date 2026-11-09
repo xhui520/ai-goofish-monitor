@@ -9,7 +9,13 @@ from src.domain.repositories.task_repository import TaskRepository
 
 
 class JsonTaskRepository(TaskRepository):
-    """基于JSON文件的任务仓储"""
+    """基于JSON文件的任务仓储。
+
+    .. deprecated::
+        生产路径已迁移到 SqliteTaskRepository，本类当前无任何调用方，
+        且实现存在已知缺陷（并发保存丢更新、非原子写、id 为列表下标
+        删除会平移）。仅供历史参考，请勿在新代码中使用。
+    """
 
     def __init__(self, config_file: str = "config.json"):
         self.config_file = config_file

@@ -167,10 +167,46 @@ def test_advance_search_page_returns_new_response_on_success() -> None:
     assert page.locator_stub.click_timeout == 10000
 
 
-def test_advance_search_page_stops_when_click_times_out() -> None:
+def test_advance_search_page_succeeds_when_click_times_out_but_response_arrives() -> None:
+    """点击"超时"可能只是慢：只要搜索响应到达，就按成功翻页处理。
+
+    旧行为在点击超时时立即停止翻页，若点击实际已生效会静默截断后续页。
+    """
+    response = FakeResponse(
+        url="https://example.com/h5/mtop.taobao.idlemtopsearch.pc.search/1.0/?page=2"
+    )
     page = FakePage(
         next_button_count=1,
-        outcomes=[FakeResponse(url="https://example.com/unused")],
+        outcomes=[response],
+        click_error=PlaywrightTimeoutError("click timeout"),
+    )
+    logs: list[str] = []
+
+    result = asyncio.run(
+        advance_search_page(
+            page=page,
+            page_num=2,
+            logger=logs.append,
+            wait_after_click=_noop_random_sleep,
+            retry_sleep=_noop_sleep,
+        )
+    )
+
+    assert result.advanced is True
+    assert result.response is response
+    assert result.stop_reason is None
+    assert page.locator_stub.clicks == 1
+    assert logs == [
+        "第 2 页下一页按钮点击超时，等待搜索响应确认。",
+        "第 2 页点击超时但搜索响应已到达，按成功翻页处理。",
+    ]
+
+
+def test_advance_search_page_stops_when_click_times_out_without_response() -> None:
+    """点击超时且响应始终未到：页面大概率未变化，按未翻页停止。"""
+    page = FakePage(
+        next_button_count=1,
+        outcomes=[PlaywrightTimeoutError("response timeout")],
         click_error=PlaywrightTimeoutError("click timeout"),
     )
     logs: list[str] = []
@@ -189,7 +225,10 @@ def test_advance_search_page_stops_when_click_times_out() -> None:
     assert result.response is None
     assert result.stop_reason == "click_timeout"
     assert page.locator_stub.clicks == 1
-    assert logs == ["第 2 页下一页按钮点击超时，停止翻页。"]
+    assert logs == [
+        "第 2 页下一页按钮点击超时，等待搜索响应确认。",
+        "第 2 页下一页按钮点击超时且未捕获搜索响应，停止翻页。",
+    ]
 
 
 def test_is_search_results_response_matches_exact_search_api() -> None:

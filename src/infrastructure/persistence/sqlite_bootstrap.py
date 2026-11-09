@@ -123,7 +123,10 @@ def _import_tasks_if_needed(conn, legacy_config_file: str | None) -> None:
     for index, raw_task in enumerate(tasks):
         if not isinstance(raw_task, dict):
             continue
-        conn.execute(
+        # 单条脏数据（如 max_pages 为非法字符串）不应中断整个迁移，
+        # 否则 schema 初始化失败、服务无法启动
+        try:
+            conn.execute(
             """
             INSERT INTO tasks (
                 id, task_name, enabled, keyword, description, analyze_images,
@@ -157,6 +160,8 @@ def _import_tasks_if_needed(conn, legacy_config_file: str | None) -> None:
                 _as_int(raw_task.get("is_running", False)),
             ),
         )
+        except (TypeError, ValueError) as exc:
+            print(f"警告: 跳过无法导入的旧任务配置（第 {index + 1} 条）: {exc}")
     _mark_bootstrap_completed(conn, TASKS_BOOTSTRAP_KEY)
     conn.commit()
 

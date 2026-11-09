@@ -1,6 +1,7 @@
 import os
 import sys
 
+import httpx
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -69,12 +70,12 @@ else:
         _sanitize_no_proxy_env()
         if PROXY_URL:
             print(f"正在为AI请求使用HTTP/S代理: {PROXY_URL}")
-            # httpx 会自动从环境变量中读取代理设置
-            os.environ['HTTP_PROXY'] = PROXY_URL
-            os.environ['HTTPS_PROXY'] = PROXY_URL
 
-        # openai 客户端内部的 httpx 会自动从环境变量中获取代理配置
-        client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
+        # 代理只作用于 AI 客户端自身（httpx 显式注入），不改写进程级
+        # HTTP_PROXY/HTTPS_PROXY——全局改写会让通知、图片下载等服务端
+        # 出站请求被静默劫持到 AI 代理。
+        http_client = httpx.AsyncClient(proxy=PROXY_URL) if PROXY_URL else None
+        client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL, http_client=http_client)
     except Exception as e:
         print(f"初始化 OpenAI 客户端时出错: {e}")
         client = None

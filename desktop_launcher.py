@@ -28,10 +28,23 @@ def run_app() -> None:
     from src.app import app
     from src.infrastructure.config.settings import settings
 
-    # 先尝试打开浏览器，稍等服务起来
     url = f"http://127.0.0.1:{settings.server_port}"
-    webbrowser.open(url)
-    time.sleep(0.5)
+
+    # 服务就绪后再打开浏览器，避免慢机器上先到连接拒绝页
+    import threading
+
+    def _open_when_ready() -> None:
+        import urllib.request
+
+        while True:
+            try:
+                with urllib.request.urlopen(f"{url}/health", timeout=2):
+                    break
+            except Exception:
+                time.sleep(0.5)
+        webbrowser.open(url)
+
+    threading.Thread(target=_open_when_ready, daemon=True).start()
 
     uvicorn.run(
         app,

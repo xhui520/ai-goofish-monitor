@@ -3,6 +3,7 @@ Telegram 通知客户端
 """
 import asyncio
 import html
+import re
 from typing import Dict
 
 import requests
@@ -10,6 +11,11 @@ import requests
 from src.infrastructure.config.settings import DEFAULT_TELEGRAM_API_BASE_URL
 
 from .base import NotificationClient
+
+
+def _is_safe_link(url: object) -> bool:
+    """链接来自半可信抓取数据：仅放行 http(s) 协议，阻断 javascript: 等。"""
+    return isinstance(url, str) and bool(re.match(r"^https?://", url.strip()))
 
 
 class TelegramClient(NotificationClient):
@@ -52,9 +58,15 @@ class TelegramClient(NotificationClient):
             f"💰 价格: {safe_price}",
             f"📝 原因: {safe_reason}",
         ]
-        if message.mobile_link:
-            telegram_message.append(f"📱 <a href='{message.mobile_link}'>手机端链接</a>")
-        telegram_message.append(f"💻 <a href='{message.desktop_link}'>电脑端链接</a>")
+        # 链接同样来自半可信数据：协议校验 + 引号转义，防止 href 被注入
+        if message.mobile_link and _is_safe_link(message.mobile_link):
+            telegram_message.append(
+                f"📱 <a href='{html.escape(message.mobile_link, quote=True)}'>手机端链接</a>"
+            )
+        if _is_safe_link(message.desktop_link):
+            telegram_message.append(
+                f"💻 <a href='{html.escape(message.desktop_link, quote=True)}'>电脑端链接</a>"
+            )
 
         telegram_api_url = f"{self.api_base_url}/bot{self.bot_token}/sendMessage"
         telegram_payload = {
