@@ -112,6 +112,7 @@ class ItemAnalysisDispatcher:
     def _build_ai_error_result(self, reason: str, *, error: str = "") -> dict:
         payload = {
             "analysis_source": "ai",
+            "analysis_status": "error",
             "is_recommended": False,
             "reason": reason,
             "keyword_hit_count": 0,
@@ -123,9 +124,10 @@ class ItemAnalysisDispatcher:
     async def _run_ai_analysis(self, job: ItemAnalysisJob, record: dict) -> dict:
         image_paths: list[str] = []
         try:
-            image_paths = await self._download_images(job, record)
+            # 先校验 prompt，避免在必失败的任务上白下载图片
             if not job.prompt_text:
                 return self._build_ai_error_result("任务未配置AI prompt，跳过分析。")
+            image_paths = await self._download_images(job, record)
             ai_result = await self._ai_analyzer(record, image_paths, job.prompt_text)
             if not ai_result:
                 return self._build_ai_error_result(
@@ -133,6 +135,7 @@ class ItemAnalysisDispatcher:
                     error="AI analysis returned None after retries.",
                 )
             ai_result.setdefault("analysis_source", "ai")
+            ai_result.setdefault("analysis_status", "ok")
             ai_result.setdefault("keyword_hit_count", 0)
             return ai_result
         except Exception as exc:

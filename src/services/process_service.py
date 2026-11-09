@@ -8,6 +8,7 @@ import contextlib
 import os
 import signal
 import sys
+import threading
 from datetime import datetime
 from typing import Awaitable, Callable, Dict, TextIO
 
@@ -34,6 +35,10 @@ class ProcessService:
         self.failure_guard = FailureGuard()
         self._on_started: LifecycleHook | None = None
         self._on_stopped: LifecycleHook | None = None
+        # 每个 task_id 一把启动锁，避免调度触发与手动启动并发时
+        # "check-then-spawn" 竞态导致重复拉起子进程；字典本身的访问用全局锁保护。
+        self._start_locks: Dict[int, asyncio.Lock] = {}
+        self._start_locks_guard = threading.Lock()
 
     def set_lifecycle_hooks(
         self,
@@ -51,10 +56,19 @@ class ProcessService:
         if asyncio.iscoroutine(result):
             await result
 
-    def _resolve_cookie_path(self, task_name: str) -> str | None:
+    def _get_start_lock(self, task_id: int) -> asyncio.Lock:
+        """按需创建并返回指定任务的启动互斥锁。"""
+        with self._start_locks_guard:
+            lock = self._start_locks.get(task_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._start_locks[task_id] = lock
+            return lock
+
+    async def _resolve_cookie_path(self, task_name: str) -> str | None:
         """Best-effort cookie/state path for a task."""
         try:
-            task = find_task_by_name_sync(task_name)
+            task = await asyncio.to_thread(find_task_by_name_sync, task_name)
             if task and isinstance(task.account_state_file, str) and task.account_state_file.strip():
                 return task.account_state_file.strip()
         except Exception:
@@ -131,34 +145,36 @@ class ProcessService:
         self.exit_watchers[task_id] = asyncio.create_task(self._watch_process_exit(process))
 
     async def start_task(self, task_id: int, task_name: str) -> bool:
-        """启动任务进程"""
-        await self._drain_finished_process(task_id)
-        if self.is_running(task_id):
-            print(f"任务 '{task_name}' (ID: {task_id}) 已在运行中")
-            return False
+        """启动任务进程（同任务的检查+拉起+注册全程持锁，避免并发重复拉起）"""
+        lock = self._get_start_lock(task_id)
+        async with lock:
+            await self._drain_finished_process(task_id)
+            if self.is_running(task_id):
+                print(f"任务 '{task_name}' (ID: {task_id}) 已在运行中")
+                return False
 
-        decision = self.failure_guard.should_skip_start(
-            task_name,
-            cookie_path=self._resolve_cookie_path(task_name),
-        )
-        if decision.skip:
-            await self._notify_skip(task_name, decision)
-            return False
+            decision = self.failure_guard.should_skip_start(
+                task_name,
+                cookie_path=await self._resolve_cookie_path(task_name),
+            )
+            if decision.skip:
+                await self._notify_skip(task_name, decision)
+                return False
 
-        log_file_path = ""
-        log_file_handle = None
-        try:
-            log_file_path, log_file_handle = self._open_log_file(task_id, task_name)
-            process = await self._spawn_process(task_name, log_file_handle)
-        except Exception as exc:
-            self._close_log_handle(log_file_handle)
-            print(f"启动任务 '{task_name}' 失败: {exc}")
-            return False
+            log_file_path = ""
+            log_file_handle = None
+            try:
+                log_file_path, log_file_handle = self._open_log_file(task_id, task_name)
+                process = await self._spawn_process(task_name, log_file_handle)
+            except Exception as exc:
+                self._close_log_handle(log_file_handle)
+                print(f"启动任务 '{task_name}' 失败: {exc}")
+                return False
 
-        self._register_runtime(task_id, task_name, process, log_file_path, log_file_handle)
-        print(f"启动任务 '{task_name}' (PID: {process.pid})")
-        await self._invoke_hook(self._on_started, task_id)
-        return True
+            self._register_runtime(task_id, task_name, process, log_file_path, log_file_handle)
+            print(f"启动任务 '{task_name}' (PID: {process.pid})")
+            await self._invoke_hook(self._on_started, task_id)
+            return True
 
     async def _notify_skip(self, task_name: str, decision) -> None:
         print(
@@ -259,7 +275,25 @@ class ProcessService:
         if sys.platform != "win32":
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
         else:
-            process.terminate()
+            # Windows 下用 taskkill 终止整棵进程树，避免仅杀直接子进程后
+            # 残留 Playwright 启动的 Chromium 等孙进程。
+            taskkilled = False
+            try:
+                taskkill = await asyncio.create_subprocess_exec(
+                    "taskkill",
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await taskkill.wait()
+                taskkilled = taskkill.returncode == 0
+            except Exception as exc:
+                print(f"taskkill 终止进程树失败 (ID: {task_id}): {exc}")
+            if not taskkilled:
+                process.terminate()
 
         try:
             await asyncio.wait_for(process.wait(), timeout=STOP_TIMEOUT_SECONDS)
@@ -282,23 +316,6 @@ class ProcessService:
         if watcher is None:
             return
         await asyncio.shield(watcher)
-
-    def reindex_after_delete(self, deleted_task_id: int) -> None:
-        """删除任务后同步重排运行时索引，避免任务下标漂移。"""
-        self.processes = self._reindex_mapping(self.processes, deleted_task_id)
-        self.log_paths = self._reindex_mapping(self.log_paths, deleted_task_id)
-        self.log_handles = self._reindex_mapping(self.log_handles, deleted_task_id)
-        self.task_names = self._reindex_mapping(self.task_names, deleted_task_id)
-        self.exit_watchers = self._reindex_mapping(self.exit_watchers, deleted_task_id)
-
-    def _reindex_mapping(self, mapping: Dict[int, object], deleted_task_id: int) -> Dict[int, object]:
-        reindexed: Dict[int, object] = {}
-        for task_id, value in mapping.items():
-            if task_id == deleted_task_id:
-                continue
-            next_task_id = task_id - 1 if task_id > deleted_task_id else task_id
-            reindexed[next_task_id] = value
-        return reindexed
 
     async def stop_all(self) -> None:
         """停止所有任务进程"""

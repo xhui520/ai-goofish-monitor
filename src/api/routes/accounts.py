@@ -34,8 +34,11 @@ def _strip_quotes(value: str) -> str:
 
 
 def _state_dir() -> str:
+    """读取账号状态目录（部署配置，只能通过 .env 修改）并确保其存在。"""
     raw = env_manager.get_value("ACCOUNT_STATE_DIR", "state") or "state"
-    return _strip_quotes(raw.strip())
+    path = _strip_quotes(raw.strip())
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def _ensure_state_dir(path: str) -> None:

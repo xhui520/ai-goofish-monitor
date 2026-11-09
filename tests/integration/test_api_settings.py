@@ -94,6 +94,7 @@ def test_rotation_settings_include_account_rotation_fields(tmp_path, monkeypatch
             "ACCOUNT_ROTATION_MODE": "on_failure",
             "ACCOUNT_ROTATION_RETRY_LIMIT": 4,
             "ACCOUNT_BLACKLIST_TTL": 900,
+            # ACCOUNT_STATE_DIR 属于部署配置，不再允许通过 API 修改
             "ACCOUNT_STATE_DIR": "accounts",
         },
     )
@@ -104,7 +105,9 @@ def test_rotation_settings_include_account_rotation_fields(tmp_path, monkeypatch
     assert "ACCOUNT_ROTATION_MODE=on_failure" in latest
     assert "ACCOUNT_ROTATION_RETRY_LIMIT=4" in latest
     assert "ACCOUNT_BLACKLIST_TTL=900" in latest
-    assert "ACCOUNT_STATE_DIR=accounts" in latest
+    # 请求中的 ACCOUNT_STATE_DIR 被忽略，.env 中的原值保持不变
+    assert "ACCOUNT_STATE_DIR=state" in latest
+    assert "ACCOUNT_STATE_DIR=accounts" not in latest
 
 
 def test_notification_settings_redact_sensitive_values_and_expose_flags(tmp_path, monkeypatch):

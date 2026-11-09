@@ -9,6 +9,7 @@ import base64
 from typing import Dict, List, Optional
 from datetime import datetime
 from dotenv import load_dotenv
+import httpx
 from openai import AsyncOpenAI
 from src.ai_message_builder import (
     build_analysis_text_prompt,
@@ -105,16 +106,19 @@ class AIClient:
             return None
 
         try:
+            http_client: Optional[httpx.AsyncClient] = None
             if self.settings.proxy_url:
                 print(f"正在为 AI 请求使用代理: {self.settings.proxy_url}")
-                os.environ['HTTP_PROXY'] = self.settings.proxy_url
-                os.environ['HTTPS_PROXY'] = self.settings.proxy_url
+                # 通过独立的 httpx 客户端注入代理，
+                # 避免修改 HTTP_PROXY/HTTPS_PROXY 等全局进程环境变量。
+                http_client = httpx.AsyncClient(proxy=self.settings.proxy_url)
 
             _sanitize_no_proxy_env()
 
             return AsyncOpenAI(
                 api_key=self.settings.api_key,
-                base_url=self.settings.base_url
+                base_url=self.settings.base_url,
+                http_client=http_client,
             )
         except Exception as e:
             print(f"初始化 AI 客户端失败: {e}")

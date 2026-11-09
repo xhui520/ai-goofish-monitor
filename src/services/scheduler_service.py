@@ -2,6 +2,7 @@
 调度服务
 负责管理定时任务的调度
 """
+import asyncio
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from typing import List
@@ -11,16 +12,22 @@ from src.domain.models.task import Task
 from src.services.process_service import ProcessService
 
 
+RELOAD_FROM_THREAD_TIMEOUT_SECONDS = 60
+
+
 class SchedulerService:
     """调度服务"""
 
     def __init__(self, process_service: ProcessService):
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         self.process_service = process_service
+        # 调度器启动所在的事件循环；AsyncIOScheduler 只能在该循环线程上操作
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def start(self):
-        """启动调度器"""
+        """启动调度器（必须在调度器所属的事件循环线程上调用）"""
         if not self.scheduler.running:
+            self._loop = asyncio.get_running_loop()
             self.scheduler.start()
             print("调度器已启动")
 
@@ -50,7 +57,41 @@ class SchedulerService:
             return None
 
     async def reload_jobs(self, tasks: List[Task]):
-        """重新加载所有定时任务"""
+        """重新加载所有定时任务。
+
+        AsyncIOScheduler 只允许在启动它的事件循环线程上操作。若本方法在
+        其他线程（如 AI 任务生成工作线程）中被调用，会自动把真正的重载
+        调度回启动循环执行，避免跨线程操作 APScheduler 内部状态。
+        """
+        try:
+            current_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if self._loop is not None and current_loop is not self._loop:
+            if current_loop is not None:
+                # 在另一个事件循环中：转发到启动循环并等待完成
+                await asyncio.wrap_future(
+                    asyncio.run_coroutine_threadsafe(
+                        self._reload_jobs_impl(tasks), self._loop
+                    )
+                )
+            else:
+                # 在没有事件循环的线程中：阻塞等待启动循环完成
+                asyncio.run_coroutine_threadsafe(
+                    self._reload_jobs_impl(tasks), self._loop
+                ).result(timeout=RELOAD_FROM_THREAD_TIMEOUT_SECONDS)
+            return
+
+        if self._loop is None:
+            print(
+                "[警告] 调度器尚未启动，本次重载将在当前循环执行；"
+                "建议在应用 lifespan 启动调度器后再触发重载。"
+            )
+        await self._reload_jobs_impl(tasks)
+
+    async def _reload_jobs_impl(self, tasks: List[Task]):
+        """重新加载所有定时任务（仅允许在调度器所属循环线程上执行）"""
         print("正在重新加载定时任务...")
         self.scheduler.remove_all_jobs()
 

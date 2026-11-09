@@ -281,16 +281,27 @@ def test_sanitize_no_proxy_handles_both_keys(monkeypatch):
     monkeypatch.setenv("NO_PROXY", "::1/128")
     monkeypatch.setenv("no_proxy", "fe80::1/10")
     _sanitize_no_proxy_env()
-    assert os.environ["NO_PROXY"] == "::1"
-    assert os.environ["no_proxy"] == "fe80::1"
+    if sys.platform == "win32":
+        # Windows 环境变量键不区分大小写，NO_PROXY 与 no_proxy 是同一份值，
+        # 后设置者覆盖前者，因此断言两次设置合并后的最终结果。
+        assert os.environ["NO_PROXY"] == "fe80::1"
+        assert os.environ["no_proxy"] == "fe80::1"
+    else:
+        assert os.environ["NO_PROXY"] == "::1"
+        assert os.environ["no_proxy"] == "fe80::1"
 
 
 def test_sanitize_no_proxy_unwraps_bracketed_ipv6(monkeypatch):
     monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,::1,[::1]")
     monkeypatch.setenv("no_proxy", "[::1/128],10.0.0.0/8,[not-ipv6]")
     _sanitize_no_proxy_env()
-    assert os.environ["NO_PROXY"] == "localhost,127.0.0.1,::1,::1"
-    assert os.environ["no_proxy"] == "::1,10.0.0.0/8,[not-ipv6]"
+    if sys.platform == "win32":
+        # 同上：Windows 下两个键共享同一份值，以最后一次设置为准。
+        assert os.environ["NO_PROXY"] == "::1,10.0.0.0/8,[not-ipv6]"
+        assert os.environ["no_proxy"] == "::1,10.0.0.0/8,[not-ipv6]"
+    else:
+        assert os.environ["NO_PROXY"] == "localhost,127.0.0.1,::1,::1"
+        assert os.environ["no_proxy"] == "::1,10.0.0.0/8,[not-ipv6]"
 
 
 def test_bracketed_ipv6_no_proxy_does_not_break_openai_client(monkeypatch):

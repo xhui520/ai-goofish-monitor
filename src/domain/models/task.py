@@ -165,7 +165,7 @@ class TaskCreate(BaseModel):
     keyword: str
     description: Optional[str] = ""
     analyze_images: bool = True
-    max_pages: int = 3
+    max_pages: int = Field(default=3, ge=1)
     personal_only: bool = True
     min_price: Optional[str] = None
     max_price: Optional[str] = None
@@ -232,7 +232,7 @@ class TaskUpdate(BaseModel):
     keyword: Optional[str] = None
     description: Optional[str] = None
     analyze_images: Optional[bool] = None
-    max_pages: Optional[int] = None
+    max_pages: Optional[int] = Field(default=None, ge=1)
     personal_only: Optional[bool] = None
     min_price: Optional[str] = None
     max_price: Optional[str] = None

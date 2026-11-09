@@ -4,6 +4,7 @@
 """
 import os
 import re
+import threading
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -11,6 +12,9 @@ from dotenv import dotenv_values
 
 
 _PLAIN_ENV_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9_./:-]+$")
+
+# 进程级写锁：所有读-改-写操作串行化，避免并发更新互相丢失
+_ENV_FILE_LOCK = threading.Lock()
 
 
 class EnvManager:
@@ -58,13 +62,14 @@ class EnvManager:
         updates: Dict[str, str],
         deletions: List[str] | None = None,
     ) -> bool:
-        """批量更新并删除环境变量"""
+        """批量更新并删除环境变量（读-改-写全程持锁，避免并发丢失更新）"""
         try:
-            existing_vars = self.read_env()
-            existing_vars.update(updates)
-            for key in deletions or []:
-                existing_vars.pop(key, None)
-            return self._write_env(existing_vars)
+            with _ENV_FILE_LOCK:
+                existing_vars = self.read_env()
+                existing_vars.update(updates)
+                for key in deletions or []:
+                    existing_vars.pop(key, None)
+                return self._write_env(existing_vars)
         except Exception as e:
             print(f"更新环境变量失败: {e}")
             return False
@@ -74,25 +79,32 @@ class EnvManager:
         return self.update_values({key: value})
 
     def delete_keys(self, keys: List[str]) -> bool:
-        """删除指定的环境变量"""
+        """删除指定的环境变量（读-改-写全程持锁）"""
         try:
-            existing_vars = self.read_env()
-            for key in keys:
-                existing_vars.pop(key, None)
-            return self._write_env(existing_vars)
+            with _ENV_FILE_LOCK:
+                existing_vars = self.read_env()
+                for key in keys:
+                    existing_vars.pop(key, None)
+                return self._write_env(existing_vars)
         except Exception as e:
             print(f"删除环境变量失败: {e}")
             return False
 
     def _write_env(self, env_vars: Dict[str, str]) -> bool:
-        """写入环境变量到文件"""
+        """写入环境变量到文件（先写临时文件再原子替换，避免中途崩溃截断 .env）"""
+        tmp_path = Path(str(self.env_file) + ".tmp")
         try:
-            with open(self.env_file, 'w', encoding='utf-8') as f:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
                 for key, value in env_vars.items():
                     f.write(f"{key}={self._serialize_value(value)}\n")
+            os.replace(tmp_path, self.env_file)
             return True
         except Exception as e:
             print(f"写入 .env 文件失败: {e}")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             return False
 
     def _serialize_value(self, value: str) -> str:

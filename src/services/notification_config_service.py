@@ -379,7 +379,12 @@ def _validate_notification_settings(settings: NotificationSettings) -> None:
         )
 
     if settings.webhook_content_type == "FORM" and settings.webhook_body:
-        parsed_body = json.loads(settings.webhook_body)
+        try:
+            parsed_body = json.loads(settings.webhook_body)
+        except json.JSONDecodeError as exc:
+            raise NotificationSettingsValidationError(
+                f"WEBHOOK_BODY 不是合法 JSON: {exc.msg}"
+            ) from exc
         if not isinstance(parsed_body, dict):
             raise NotificationSettingsValidationError(
                 "WEBHOOK_BODY 在 FORM 模式下必须是 JSON 对象"

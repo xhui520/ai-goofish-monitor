@@ -2,6 +2,7 @@
 任务生成作业服务
 """
 import asyncio
+from collections import deque
 from copy import deepcopy
 import threading
 from typing import Awaitable, Dict, Iterable, Optional
@@ -9,6 +10,9 @@ from uuid import uuid4
 
 from src.domain.models.task import Task
 from src.domain.models.task_generation import TaskGenerationJob, TaskGenerationStep
+
+# 仅保留最近 N 个已结束（完成/失败）的作业，避免 _jobs 无限增长
+MAX_FINISHED_JOBS = 50
 
 DEFAULT_GENERATION_STEPS: tuple[tuple[str, str], ...] = (
     ("prepare", "接收创建请求"),
@@ -28,6 +32,18 @@ class TaskGenerationService:
         self._jobs: Dict[str, TaskGenerationJob] = {}
         self._lock = threading.Lock()
         self._workers: set[threading.Thread] = set()
+        self._finished_job_ids: deque[str] = deque()
+        self._keyword_locks: Dict[str, threading.Lock] = {}
+        self._keyword_locks_guard = threading.Lock()
+
+    def get_keyword_lock(self, keyword: str) -> threading.Lock:
+        """获取同关键词生成作业的互斥锁（串行化相同关键词的生成任务）"""
+        with self._keyword_locks_guard:
+            lock = self._keyword_locks.get(keyword)
+            if lock is None:
+                lock = threading.Lock()
+                self._keyword_locks[keyword] = lock
+            return lock
 
     async def create_job(self, task_name: str) -> TaskGenerationJob:
         job = TaskGenerationJob(
@@ -40,6 +56,7 @@ class TaskGenerationService:
         )
         with self._lock:
             self._jobs[job.job_id] = job
+            self._prune_finished_jobs_locked()
             return deepcopy(job)
 
     async def get_job(self, job_id: str) -> Optional[TaskGenerationJob]:
@@ -56,10 +73,10 @@ class TaskGenerationService:
             try:
                 asyncio.run(coroutine)
             finally:
-                if thread is None:
-                    return
-                with self._lock:
-                    self._workers.discard(thread)
+                # thread 在 start 前必已赋值，这里直接判空兜底
+                if thread is not None:
+                    with self._lock:
+                        self._workers.discard(thread)
 
         thread = threading.Thread(target=runner, daemon=True)
         with self._lock:
@@ -97,6 +114,7 @@ class TaskGenerationService:
             for step in job.steps:
                 if step.status != "failed":
                     step.status = "completed"
+            self._mark_finished_locked(job.job_id)
             return deepcopy(job)
 
     async def fail(
@@ -117,7 +135,18 @@ class TaskGenerationService:
                 if step:
                     step.status = "failed"
                     step.message = error
+            self._mark_finished_locked(job.job_id)
             return deepcopy(job)
+
+    def _mark_finished_locked(self, job_id: str) -> None:
+        if job_id not in self._finished_job_ids:
+            self._finished_job_ids.append(job_id)
+        self._prune_finished_jobs_locked()
+
+    def _prune_finished_jobs_locked(self) -> None:
+        while len(self._finished_job_ids) > MAX_FINISHED_JOBS:
+            oldest_job_id = self._finished_job_ids.popleft()
+            self._jobs.pop(oldest_job_id, None)
 
     def _require_job(self, job_id: str) -> TaskGenerationJob:
         job = self._jobs.get(job_id)

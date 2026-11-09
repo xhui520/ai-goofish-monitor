@@ -1,6 +1,7 @@
 """
 设置管理路由
 """
+import asyncio
 import os
 from typing import Optional
 
@@ -109,11 +110,12 @@ class AISettingsModel(BaseModel):
 
 
 class RotationSettingsModel(BaseModel):
+    # 注意：不接受 ACCOUNT_STATE_DIR——该值决定账号状态文件的落盘目录，
+    # 属于部署配置，只允许通过 .env 修改，避免 API 任意目录写入。
     ACCOUNT_ROTATION_ENABLED: Optional[bool] = None
     ACCOUNT_ROTATION_MODE: Optional[str] = None
     ACCOUNT_ROTATION_RETRY_LIMIT: Optional[int] = None
     ACCOUNT_BLACKLIST_TTL: Optional[int] = None
-    ACCOUNT_STATE_DIR: Optional[str] = None
     PROXY_ROTATION_ENABLED: Optional[bool] = None
     PROXY_ROTATION_MODE: Optional[str] = None
     PROXY_POOL: Optional[str] = None
@@ -288,13 +290,23 @@ async def update_ai_settings(settings: AISettingsModel):
 @router.post("/ai/test")
 async def test_ai_settings(settings: dict):
     """测试AI模型设置是否有效"""
-    try:
+    stored_api_key = env_manager.get_value("OPENAI_API_KEY", "")
+    submitted_api_key = settings.get("OPENAI_API_KEY", "")
+    api_key = submitted_api_key or stored_api_key
+
+    stored_base_url = (env_manager.get_value("OPENAI_BASE_URL", "") or "").rstrip("/")
+    request_base_url = (settings.get("OPENAI_BASE_URL", "") or "").rstrip("/")
+    # 安全约束：不允许把已存储的 API Key 发往请求中新指定的第三方 Base URL。
+    # 切换 Base URL 时必须显式提交该地址专用的 API Key。
+    if request_base_url and request_base_url != stored_base_url and not submitted_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="切换新的 Base URL 时必须同时提供该地址专用的 API Key。",
+        )
+
+    def _run_sync_test() -> dict:
         from openai import OpenAI
         import httpx
-
-        stored_api_key = env_manager.get_value("OPENAI_API_KEY", "")
-        submitted_api_key = settings.get("OPENAI_API_KEY", "")
-        api_key = submitted_api_key or stored_api_key
 
         client_params = {
             "api_key": api_key,
@@ -303,8 +315,10 @@ async def test_ai_settings(settings: dict):
         }
 
         proxy_url = settings.get("PROXY_URL", "")
+        http_client = None
         if proxy_url:
-            client_params["http_client"] = httpx.Client(proxy=proxy_url)
+            http_client = httpx.Client(proxy=proxy_url)
+            client_params["http_client"] = http_client
 
         model_name = settings.get("OPENAI_MODEL_NAME", "")
         client = OpenAI(**client_params)
@@ -312,38 +326,52 @@ async def test_ai_settings(settings: dict):
         api_mode = CHAT_COMPLETIONS_API_MODE
 
         try:
-            response = create_ai_response_sync(
-                client,
-                api_mode,
-                build_ai_request_params(
+            try:
+                response = create_ai_response_sync(
+                    client,
                     api_mode,
-                    model=model_name,
-                    messages=messages,
-                    max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
-                ),
-            )
-        except Exception as exc:
-            if not is_chat_completions_api_unsupported_error(exc):
-                raise
-            api_mode = RESPONSES_API_MODE
-            response = create_ai_response_sync(
-                client,
-                api_mode,
-                build_ai_request_params(
+                    build_ai_request_params(
+                        api_mode,
+                        model=model_name,
+                        messages=messages,
+                        max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
+                    ),
+                )
+            except Exception as exc:
+                if not is_chat_completions_api_unsupported_error(exc):
+                    raise
+                api_mode = RESPONSES_API_MODE
+                response = create_ai_response_sync(
+                    client,
                     api_mode,
-                    model=model_name,
-                    messages=messages,
-                    max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
-                ),
-            )
+                    build_ai_request_params(
+                        api_mode,
+                        model=model_name,
+                        messages=messages,
+                        max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
+                    ),
+                )
 
-        return {
-            "success": True,
-            "message": "AI模型连接测试成功！",
-            "response": extract_ai_response_content(response),
-        }
+            return {
+                "success": True,
+                "message": "AI模型连接测试成功！",
+                "response": extract_ai_response_content(response),
+            }
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    try:
+        # 同步 SDK 调用（最长 30s）放到工作线程，避免阻塞事件循环
+        return await asyncio.to_thread(_run_sync_test)
     except Exception as exc:
+        # 只记录到服务日志，不把底层异常细节返回给客户端
+        print(f"AI 连通性测试失败: {exc}")
         return {
             "success": False,
-            "message": f"AI模型连接测试失败: {exc}",
+            "message": f"AI 连通性测试失败: {type(exc).__name__}",
         }

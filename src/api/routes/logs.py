@@ -95,10 +95,11 @@ async def get_logs(
         return {"new_content": new_content, "new_pos": file_size}
 
     except Exception as e:
+        print(f"读取日志文件 {log_file_path} 失败: {e}")
         return JSONResponse(
             status_code=500,
-            content={"new_content": f"\n读取日志文件时出错: {e}", "new_pos": from_pos}
-        )  
+            content={"new_content": "\n读取日志文件失败，请查看服务日志。", "new_pos": from_pos}
+        )
 
 
 @router.get("/tail")
@@ -150,10 +151,11 @@ async def get_logs_tail(
             "new_pos": file_size
         }
     except Exception as e:
+        print(f"读取日志文件 {log_file_path} 失败: {e}")
         return JSONResponse(
             status_code=500,
             content={
-                "content": f"读取日志文件时出错: {e}",
+                "content": "读取日志文件失败，请查看服务日志。",
                 "has_more": False,
                 "next_offset": offset_lines,
                 "new_pos": 0
@@ -184,20 +186,8 @@ async def clear_logs(
             await f.write("")
         return {"message": "日志已成功清空。"}
     except Exception as e:
+        print(f"清空日志文件 {log_file_path} 失败: {e}")
         return JSONResponse(
             status_code=500,
-            content={"message": f"清空日志文件时出错: {e}"}
-        )
-
-    if not os.path.exists(log_file_path):
-        return {"message": "日志文件不存在，无需清空。"}
-
-    try:
-        async with aiofiles.open(log_file_path, 'w', encoding='utf-8') as f:
-            await f.write("")
-        return {"message": "日志已成功清空。"}
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"清空日志文件时出错: {e}"}
+            content={"message": "清空日志文件失败，请查看服务日志。"}
         )

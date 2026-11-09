@@ -78,41 +78,50 @@ async def run_ai_generation_job(
     generation_service: TaskGenerationService,
 ) -> None:
     output_filename = build_criteria_filename(req.keyword)
-    try:
-        await advance_job(
-            generation_service,
-            job_id,
-            "prepare",
-            "已接收请求，开始准备分析标准。",
-        )
+    # 同一关键词的生成作业串行执行，避免并发任务相互覆盖共享的 criteria 文件
+    keyword_lock = generation_service.get_keyword_lock(req.keyword)
+    with keyword_lock:
+        # 记录本次运行前文件是否已存在：失败时只清理本次新建的文件，
+        # 防止误删其他同关键词任务正在使用的共享 criteria 文件。
+        file_existed_before = os.path.exists(output_filename)
+        try:
+            await advance_job(
+                generation_service,
+                job_id,
+                "prepare",
+                "已接收请求，开始准备分析标准。",
+            )
 
-        async def report_progress(step_key: str, message: str) -> None:
-            await advance_job(generation_service, job_id, step_key, message)
+            async def report_progress(step_key: str, message: str) -> None:
+                await advance_job(generation_service, job_id, step_key, message)
 
-        generated_criteria = await generate_criteria(
-            user_description=req.description or "",
-            reference_file_path="prompts/macbook_criteria.txt",
-            progress_callback=report_progress,
-        )
+            generated_criteria = await generate_criteria(
+                user_description=req.description or "",
+                reference_file_path="prompts/macbook_criteria.txt",
+                progress_callback=report_progress,
+            )
 
-        await advance_job(
-            generation_service,
-            job_id,
-            "persist",
-            f"正在保存分析标准到 {output_filename}。",
-        )
-        await save_generated_criteria(output_filename, generated_criteria)
+            await advance_job(
+                generation_service,
+                job_id,
+                "persist",
+                f"正在保存分析标准到 {output_filename}。",
+            )
+            await save_generated_criteria(output_filename, generated_criteria)
 
-        await advance_job(
-            generation_service,
-            job_id,
-            "task",
-            "分析标准已生成，正在创建任务记录。",
-        )
-        task = await task_service.create_task(build_task_create(req, output_filename))
-        await reload_scheduler(task_service, scheduler_service)
-        await generation_service.complete(job_id, task, f"任务“{req.task_name}”创建完成。")
-    except Exception as exc:
-        if os.path.exists(output_filename):
-            os.remove(output_filename)
-        await generation_service.fail(job_id, f"AI 任务生成失败: {exc}")
+            await advance_job(
+                generation_service,
+                job_id,
+                "task",
+                "分析标准已生成，正在创建任务记录。",
+            )
+            task = await task_service.create_task(build_task_create(req, output_filename))
+            await reload_scheduler(task_service, scheduler_service)
+            await generation_service.complete(job_id, task, f"任务“{req.task_name}”创建完成。")
+        except Exception as exc:
+            if not file_existed_before and os.path.exists(output_filename):
+                try:
+                    os.remove(output_filename)
+                except OSError as remove_exc:
+                    print(f"清理新生成的 criteria 文件失败: {remove_exc}")
+            await generation_service.fail(job_id, f"AI 任务生成失败: {exc}")

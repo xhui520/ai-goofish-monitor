@@ -19,4 +19,5 @@ async def get_dashboard_summary(
         tasks = await task_service.get_all_tasks()
         return await build_dashboard_snapshot(tasks)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"加载 dashboard 数据失败: {exc}")
+        print(f"加载 dashboard 数据失败: {exc}")
+        raise HTTPException(status_code=500, detail="加载 dashboard 数据失败，请查看服务日志")

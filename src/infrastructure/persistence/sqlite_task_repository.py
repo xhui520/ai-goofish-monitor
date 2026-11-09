@@ -83,26 +83,48 @@ class SqliteTaskRepository(TaskRepository):
         with sqlite_connection(self.db_path) as conn:
             task_id = task.id
             if task_id is None:
-                task_id = self._next_task_id(conn)
-            payload = self._task_values(task.model_copy(update={"id": task_id}))
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO tasks (
-                    id, task_name, enabled, keyword, description, analyze_images,
-                    max_pages, personal_only, min_price, max_price, cron,
-                    ai_prompt_base_file, ai_prompt_criteria_file, account_state_file,
-                    account_strategy, free_shipping, new_publish_option, region,
-                    decision_mode, keyword_rules_json, is_running
-                ) VALUES (
-                    :id, :task_name, :enabled, :keyword, :description, :analyze_images,
-                    :max_pages, :personal_only, :min_price, :max_price, :cron,
-                    :ai_prompt_base_file, :ai_prompt_criteria_file, :account_state_file,
-                    :account_strategy, :free_shipping, :new_publish_option, :region,
-                    :decision_mode, :keyword_rules_json, :is_running
+                # 新任务：省略 id 列，由 SQLite 原子分配 rowid，避免并发下
+                # SELECT MAX(id)+1 拿到相同 id 后用 INSERT OR REPLACE 互相覆盖。
+                cursor = conn.execute(
+                    """
+                    INSERT INTO tasks (
+                        task_name, enabled, keyword, description, analyze_images,
+                        max_pages, personal_only, min_price, max_price, cron,
+                        ai_prompt_base_file, ai_prompt_criteria_file, account_state_file,
+                        account_strategy, free_shipping, new_publish_option, region,
+                        decision_mode, keyword_rules_json, is_running
+                    ) VALUES (
+                        :task_name, :enabled, :keyword, :description, :analyze_images,
+                        :max_pages, :personal_only, :min_price, :max_price, :cron,
+                        :ai_prompt_base_file, :ai_prompt_criteria_file, :account_state_file,
+                        :account_strategy, :free_shipping, :new_publish_option, :region,
+                        :decision_mode, :keyword_rules_json, :is_running
+                    )
+                    """,
+                    self._task_values(task),
                 )
-                """,
-                payload,
-            )
+                task_id = cursor.lastrowid
+            else:
+                # 更新已存在的任务：显式 id 的 upsert 语义保持不变
+                payload = self._task_values(task.model_copy(update={"id": task_id}))
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO tasks (
+                        id, task_name, enabled, keyword, description, analyze_images,
+                        max_pages, personal_only, min_price, max_price, cron,
+                        ai_prompt_base_file, ai_prompt_criteria_file, account_state_file,
+                        account_strategy, free_shipping, new_publish_option, region,
+                        decision_mode, keyword_rules_json, is_running
+                    ) VALUES (
+                        :id, :task_name, :enabled, :keyword, :description, :analyze_images,
+                        :max_pages, :personal_only, :min_price, :max_price, :cron,
+                        :ai_prompt_base_file, :ai_prompt_criteria_file, :account_state_file,
+                        :account_strategy, :free_shipping, :new_publish_option, :region,
+                        :decision_mode, :keyword_rules_json, :is_running
+                    )
+                    """,
+                    payload,
+                )
             conn.commit()
         return task.model_copy(update={"id": task_id})
 
@@ -115,10 +137,6 @@ class SqliteTaskRepository(TaskRepository):
             cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             conn.commit()
         return cursor.rowcount > 0
-
-    def _next_task_id(self, conn) -> int:
-        row = conn.execute("SELECT COALESCE(MAX(id), -1) AS max_id FROM tasks").fetchone()
-        return int(row["max_id"]) + 1
 
     def _task_values(self, task: Task) -> dict:
         values = task.model_dump()

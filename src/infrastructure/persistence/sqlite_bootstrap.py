@@ -8,7 +8,11 @@ import json
 import threading
 from pathlib import Path
 
-from src.infrastructure.persistence.sqlite_connection import init_schema, sqlite_connection
+from src.infrastructure.persistence.sqlite_connection import (
+    get_database_path,
+    init_schema,
+    sqlite_connection,
+)
 from src.infrastructure.persistence.storage_names import (
     build_result_filename,
     normalize_keyword_from_filename,
@@ -24,6 +28,39 @@ TASKS_BOOTSTRAP_KEY = "bootstrap:legacy_tasks"
 RESULTS_BOOTSTRAP_KEY = "bootstrap:legacy_results"
 SNAPSHOTS_BOOTSTRAP_KEY = "bootstrap:legacy_price_snapshots"
 
+# 进程内快速路径：同参数的 bootstrap 只执行一次，后续调用直接返回。
+# 键为参数签名，兼容测试中使用不同 tmp 数据库路径的场景。
+_BOOTSTRAP_LOCK = threading.Lock()
+_BOOTSTRAP_COMPLETED: set[str] = set()
+
+
+def _bootstrap_signature(
+    db_path: str | None,
+    legacy_config_file: str | None,
+    legacy_result_dir: str,
+    legacy_price_history_dir: str,
+) -> str:
+    if db_path:
+        resolved_db = str(Path(db_path).resolve())
+    else:
+        # 未显式指定数据库时，真实路径取决于 APP_DATABASE_FILE 环境变量与
+        # 当前工作目录，必须按调用时解析，否则跨工作目录会误判已完成。
+        resolved_db = str(Path(get_database_path()).resolve())
+    return "|".join(
+        (
+            resolved_db,
+            str(legacy_config_file),
+            str(legacy_result_dir),
+            str(legacy_price_history_dir),
+        )
+    )
+
+
+def reset_bootstrap_state() -> None:
+    """清空进程内 bootstrap 快速路径状态（主要供测试重建数据库使用）。"""
+    with _BOOTSTRAP_LOCK:
+        _BOOTSTRAP_COMPLETED.clear()
+
 
 def bootstrap_sqlite_storage(
     db_path: str | None = None,
@@ -32,12 +69,23 @@ def bootstrap_sqlite_storage(
     legacy_result_dir: str = LEGACY_RESULT_DIR,
     legacy_price_history_dir: str = LEGACY_PRICE_HISTORY_DIR,
 ) -> None:
-    with BOOTSTRAP_LOCK:
+    signature = _bootstrap_signature(
+        db_path,
+        legacy_config_file,
+        legacy_result_dir,
+        legacy_price_history_dir,
+    )
+    if signature in _BOOTSTRAP_COMPLETED:
+        return
+    with _BOOTSTRAP_LOCK:
+        if signature in _BOOTSTRAP_COMPLETED:
+            return
         with sqlite_connection(db_path) as conn:
             init_schema(conn)
             _import_tasks_if_needed(conn, legacy_config_file)
             _import_results_if_needed(conn, legacy_result_dir)
             _import_price_snapshots_if_needed(conn, legacy_price_history_dir)
+        _BOOTSTRAP_COMPLETED.add(signature)
 
 
 def _table_is_empty(conn, table_name: str) -> bool:

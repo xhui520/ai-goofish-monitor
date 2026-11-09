@@ -122,11 +122,10 @@ async def generate_task(
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = f"AI任务生成API发生未知错误: {str(e)}"
-        print(error_msg)
+        print(f"AI任务生成API发生未知错误: {e}")
         import traceback
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
+        raise HTTPException(status_code=500, detail="任务生成失败，请查看服务日志")
 @router.get("/generate-jobs/{job_id}", response_model=dict)
 async def get_task_generation_job(
     job_id: str,
@@ -167,6 +166,8 @@ async def update_task(
             )
             if not _has_keyword_rules(final_rules):
                 raise HTTPException(status_code=400, detail="关键词模式下至少需要一个关键词。")
+        criteria_temp_file: str | None = None
+        criteria_target_file: str | None = None
         if target_mode == "ai" and (description_changed or switched_to_ai):
             print(f"检测到任务 {task_id} 需要刷新 AI 标准文件，开始重新生成...")
             try:
@@ -182,6 +183,9 @@ async def update_task(
                     if c.isalnum() or c in "_-"
                 ).rstrip()
                 output_filename = f"prompts/{safe_keyword}_criteria.txt"
+                # 先写临时文件，任务更新成功后再原子替换，
+                # 避免生成/更新失败时破坏其他同关键词任务正在使用的共享 criteria 文件。
+                temp_filename = output_filename + ".tmp"
                 print(f"目标文件路径: {output_filename}")
                 print("开始调用 AI 生成新的分析标准...")
                 generated_criteria = await generate_criteria(
@@ -191,22 +195,40 @@ async def update_task(
                 if not generated_criteria or len(generated_criteria.strip()) == 0:
                     print("AI 返回的内容为空")
                     raise HTTPException(status_code=500, detail="AI 未能生成分析标准，返回内容为空。")
-                print(f"保存新的分析标准到: {output_filename}")
+                print(f"写入临时分析标准文件: {temp_filename}")
                 os.makedirs("prompts", exist_ok=True)
-                async with aiofiles.open(output_filename, 'w', encoding='utf-8') as f:
+                async with aiofiles.open(temp_filename, 'w', encoding='utf-8') as f:
                     await f.write(generated_criteria)
-                print(f"新的分析标准已保存")
+                criteria_temp_file = temp_filename
+                criteria_target_file = output_filename
                 task_update.ai_prompt_criteria_file = output_filename
                 print(f"已更新 ai_prompt_criteria_file 字段为: {output_filename}")
             except HTTPException:
                 raise
             except Exception as e:
-                error_msg = f"重新生成 criteria 文件时出错: {str(e)}"
-                print(error_msg)
+                print(f"重新生成 criteria 文件时出错: {e}")
                 import traceback
                 print(traceback.format_exc())
-                raise HTTPException(status_code=500, detail=error_msg)
-        task = await service.update_task(task_id, task_update)
+                raise HTTPException(status_code=500, detail="重新生成 criteria 文件失败，请查看服务日志")
+        update_payload = task_update.model_dump(exclude_unset=True)
+        # is_running 由进程生命周期钩子通过 update_task_status 维护，
+        # 不允许客户端通过 PATCH 接口伪造运行状态。
+        update_payload.pop("is_running", None)
+        try:
+            task = await service.update_task(task_id, TaskUpdate(**update_payload))
+        except Exception:
+            if criteria_temp_file and os.path.exists(criteria_temp_file):
+                try:
+                    os.remove(criteria_temp_file)
+                except OSError:
+                    pass
+            raise
+        if criteria_temp_file and criteria_target_file:
+            try:
+                os.replace(criteria_temp_file, criteria_target_file)
+                print(f"新的分析标准已保存: {criteria_target_file}")
+            except Exception as exc:
+                print(f"替换 criteria 文件 {criteria_target_file} 失败: {exc}")
         await _reload_scheduler_if_needed(service, scheduler_service)
         return {"message": "任务更新成功", "task": serialize_task(task, scheduler_service)}
     except ValueError as e:

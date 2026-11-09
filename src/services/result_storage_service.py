@@ -151,10 +151,20 @@ async def save_result_record(record: dict, keyword: str) -> bool:
     return await asyncio.to_thread(_save_result_record_sync, record, keyword)
 
 
+def _derive_analysis_status(analysis: dict) -> str:
+    """推导记录的 AI 分析状态：失败记录会在去重时被排除，等待下次重新分析。"""
+    if analysis.get("analysis_status") == "error" or analysis.get("error"):
+        return "error"
+    return "ok"
+
+
 def _save_result_record_sync(record: dict, keyword: str) -> bool:
     bootstrap_sqlite_storage()
     item = record.get("商品信息", {}) or {}
-    analysis = record.get("ai_analysis", {}) or {}
+    analysis = dict(record.get("ai_analysis", {}) or {})
+    # 保存时统一补齐分析状态标记，保证去重查询与存储数据一致
+    analysis.setdefault("analysis_status", _derive_analysis_status(analysis))
+    record["ai_analysis"] = analysis
     link = str(item.get("商品链接") or "")
     link_unique_key = _get_link_unique_key(link) if link else _fallback_unique_key(record, item)
     keyword_hit_count = analysis.get("keyword_hit_count", 0)
@@ -195,15 +205,74 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
     return True
 
 
+_JSON1_SUPPORTED: bool | None = None
+
+
+def _json1_supported(conn) -> bool:
+    """探测当前 SQLite 是否支持 JSON1（json_extract），结果进程内缓存。"""
+    global _JSON1_SUPPORTED
+    if _JSON1_SUPPORTED is None:
+        try:
+            conn.execute("SELECT json_extract('{}', '$.a')").fetchone()
+            _JSON1_SUPPORTED = True
+        except Exception:
+            _JSON1_SUPPORTED = False
+    return _JSON1_SUPPORTED
+
+
+def _record_ai_analysis_errored(record: dict) -> bool:
+    analysis = record.get("ai_analysis", {}) or {}
+    if not isinstance(analysis, dict):
+        return False
+    if analysis.get("analysis_status") == "error":
+        return True
+    # 兼容旧数据：分发器失败时会在 ai_analysis.error 写入异常信息
+    return bool(analysis.get("error"))
+
+
 def load_processed_link_keys(keyword: str) -> set[str]:
+    """加载已成功分析过的商品去重键。
+
+    AI 分析失败（analysis_status=error 或带 error 字段）的记录会被排除，
+    避免 AI 故障期间分析失败的商品被永久去重跳过（静默漏报）。
+    """
     bootstrap_sqlite_storage()
     filename = build_result_filename(keyword)
     with sqlite_connection() as conn:
+        if _json1_supported(conn):
+            rows = conn.execute(
+                """
+                SELECT link_unique_key
+                FROM result_items
+                WHERE result_filename = ?
+                  AND COALESCE(
+                      json_extract(raw_json, '$.ai_analysis.analysis_status'), ''
+                  ) != 'error'
+                  AND json_extract(raw_json, '$.ai_analysis.error') IS NULL
+                """,
+                (filename,),
+            ).fetchall()
+            return {str(row["link_unique_key"]) for row in rows if row["link_unique_key"]}
+
         rows = conn.execute(
-            "SELECT link_unique_key FROM result_items WHERE result_filename = ?",
+            "SELECT link_unique_key, raw_json FROM result_items WHERE result_filename = ?",
             (filename,),
         ).fetchall()
-    return {str(row["link_unique_key"]) for row in rows if row["link_unique_key"]}
+
+    keys: set[str] = set()
+    for row in rows:
+        key = row["link_unique_key"]
+        if not key:
+            continue
+        try:
+            record = json.loads(str(row["raw_json"]))
+        except json.JSONDecodeError:
+            keys.add(str(key))
+            continue
+        if _record_ai_analysis_errored(record):
+            continue
+        keys.add(str(key))
+    return keys
 
 
 async def list_result_filenames() -> list[str]:
@@ -457,6 +526,24 @@ def _save_result_blacklist_keywords_sync(filename: str, keywords: list[str]) -> 
 def load_visible_result_item_ids(filename: str) -> set[str]:
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
+        blacklist_keywords = _load_blacklist_keywords_from_conn(conn, filename)
+        if not blacklist_keywords:
+            # 未配置黑名单规则时可见性只取决于 status，直接走 SQL 避免解析全量 raw_json
+            rows = conn.execute(
+                """
+                SELECT item_id
+                FROM result_items
+                WHERE result_filename = ?
+                  AND status = 'active'
+                  AND item_id IS NOT NULL
+                """,
+                (filename,),
+            ).fetchall()
+            return {
+                str(row["item_id"]).strip()
+                for row in rows
+                if str(row["item_id"] or "").strip()
+            }
         visible_records = _load_filtered_records_from_conn(
             conn,
             filename=filename,
