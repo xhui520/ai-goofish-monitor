@@ -23,6 +23,9 @@ export function useAuth() {
   }
 
   function logout() {
+    // 通知后端清除会话 Cookie（fire-and-forget，失败不影响本地登出）
+    fetch('/auth/logout', { method: 'POST' }).catch(() => {})
+
     username.value = null
     isLoggedIn.value = false
     localStorage.removeItem('auth_username')

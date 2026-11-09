@@ -31,7 +31,10 @@ async function handleLogin() {
   try {
     const success = await login(username.value, password.value)
     if (success) {
-      const redirectPath = (route.query.redirect as string) || '/'
+      const redirectQuery = (route.query.redirect as string) || '/'
+      // 仅允许站内相对路径，避免跳转到外部地址
+      const redirectPath =
+        redirectQuery.startsWith('/') && !redirectQuery.startsWith('//') ? redirectQuery : '/'
       router.push(redirectPath)
     } else {
       error.value = t('login.errors.invalidCredentials')

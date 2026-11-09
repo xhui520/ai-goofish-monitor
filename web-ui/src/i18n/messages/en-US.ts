@@ -63,6 +63,7 @@ const enUS = {
     openNavigation: 'Open navigation menu',
     openNotifications: 'Open notification settings',
     openPrompts: 'Open prompt manager',
+    logout: 'Log out',
     searchUnavailable: 'Task search is only available on the dashboard...',
     accountManagement: 'Account Management',
   },

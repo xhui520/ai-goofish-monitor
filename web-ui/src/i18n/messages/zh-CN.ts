@@ -63,6 +63,7 @@ const zhCN = {
     openNavigation: '打开导航菜单',
     openNotifications: '打开通知设置',
     openPrompts: '打开 Prompt 管理',
+    logout: '退出登录',
     searchUnavailable: '任务搜索仅在监控概览页可用...',
     accountManagement: '账号管理',
   },

@@ -4,21 +4,24 @@ import { useRoute, useRouter } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import DashboardTaskSearch from '@/components/layout/DashboardTaskSearch.vue'
 import LocaleToggle from '@/components/layout/LocaleToggle.vue'
-import { 
-  Zap, 
-  Bell, 
-  Search, 
+import {
+  Zap,
+  Bell,
+  Search,
   UserCircle,
   HelpCircle,
+  LogOut,
   Menu
 } from 'lucide-vue-next'
 import Badge from '@/components/ui/badge/Badge.vue'
 import { useMobileNav } from '@/composables/useMobileNav'
+import { useAuth } from '@/composables/useAuth'
 import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
 const route = useRoute()
 const { toggleMobileNav } = useMobileNav()
+const { logout } = useAuth()
 const inactiveSearchValue = ref('')
 const { t } = useI18n()
 
@@ -99,6 +102,16 @@ function goPrompts() {
            @click="goPrompts"
          >
             <HelpCircle class="w-5 h-5" />
+         </Button>
+         <Button
+           variant="ghost"
+           size="icon"
+           class="rounded-full text-slate-500 hover:text-red-500 hover:bg-red-50"
+           :aria-label="t('header.logout')"
+           :title="t('header.logout')"
+           @click="logout"
+         >
+            <LogOut class="w-5 h-5" />
          </Button>
       </div>
       

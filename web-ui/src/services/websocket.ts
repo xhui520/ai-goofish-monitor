@@ -3,6 +3,8 @@ type WebSocketEventHandler = (data: any) => void;
 class WebSocketService {
   private ws: WebSocket | null = null;
   private reconnectInterval = 3000;
+  private maxReconnectInterval = 30000;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners: Map<string, WebSocketEventHandler[]> = new Map();
   public isConnected = false;
   private shouldConnect = false;
@@ -11,6 +13,7 @@ class WebSocketService {
     // 延迟连接，等待认证完成
     // 只有在已登录时才尝试连接
     if (localStorage.getItem('auth_logged_in') === 'true') {
+      this.shouldConnect = true;
       this.connect();
     }
   }
@@ -24,8 +27,12 @@ class WebSocketService {
   }
 
   public stop() {
-    // 停止 WebSocket 连接
+    // 停止 WebSocket 连接，并取消已排队的重连定时器
     this.shouldConnect = false;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -33,6 +40,11 @@ class WebSocketService {
   }
 
   private connect() {
+    // stop() 之后再触发的定时回调不应建立连接
+    if (!this.shouldConnect) {
+      return;
+    }
+
     // Determine the protocol (ws or wss) based on the current page protocol
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host; // This includes port if present
@@ -45,6 +57,8 @@ class WebSocketService {
     this.ws.onopen = () => {
       console.log('WebSocket connected');
       this.isConnected = true;
+      // 连接成功后重置退避间隔
+      this.reconnectInterval = 3000;
       this.emit('connected', { isConnected: true });
     };
 
@@ -66,9 +80,11 @@ class WebSocketService {
         this.isConnected = false;
         this.emit('disconnected', { isConnected: false });
       }
-      // 只有在 shouldConnect 为 true 或已登录时才重连
-      if (this.shouldConnect || localStorage.getItem('auth_logged_in') === 'true') {
-        setTimeout(() => this.connect(), this.reconnectInterval);
+      // 只有在 shouldConnect 为 true 时才重连（登出后不再复活连接）
+      if (this.shouldConnect) {
+        this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectInterval);
+        // 指数退避，避免服务宕机时无限高频重试
+        this.reconnectInterval = Math.min(this.reconnectInterval * 2, this.maxReconnectInterval);
       }
     };
 
