@@ -52,9 +52,14 @@ COPY config.json.example /app/config.json.example
 
 RUN mkdir -p /app/data /app/state /app/logs /app/images /app/jsonl /app/price_history
 
+# 以非 root 用户运行，降低应用层漏洞的影响面
+# （挂载卷的属主冲突可通过在宿主机 chown 解决：docker compose exec 不可用时参考 README）
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /usr/sbin/nologin appuser \
+    && chown -R appuser:appuser /app /ms-playwright
+
 EXPOSE 8000
 
-USER root
+USER appuser
 
 ENTRYPOINT ["tini", "--"]
 
